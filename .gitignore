@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs & OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# MatterStack Workspaces
+# 1. Ignore all workspaces by default
+workspaces/*
+
+# 2. Whitelist specific demo projects
+!workspaces/coatings_active_learning/
+!workspaces/battery_screening/
+!workspaces/thin_film_lab/
+!workspaces/catalyst_human_in_loop/
+
+# 3. Ignore artifacts/results within whitelisted workspaces
+workspaces/*/results/
+workspaces/*/logs/
+workspaces/*/output/
+workspaces/*/data/
+workspaces/*/*.log

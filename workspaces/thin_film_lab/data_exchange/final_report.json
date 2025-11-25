@@ -1,0 +1,23 @@
+{
+  "candidate_id": "cand_6916",
+  "sim_data": {
+    "conductivity_sim": 99.0327052308438,
+    "stability_sim": 0.8289755567640535,
+    "composition": {
+      "A": 0.76,
+      "B": 0.2
+    },
+    "candidate_id": "cand_6916"
+  },
+  "exp_data": {
+    "conductivity_exp": 63.14693765792977,
+    "stability_exp": 0.1167834315175424,
+    "status": "success",
+    "robot_id": "Bot-42"
+  },
+  "metrics": {
+    "conductivity_error_rel": 0.5682899108632804,
+    "stability_error_rel": 6.098400398001068,
+    "overall_drift": 3.333345154432174
+  }
+}

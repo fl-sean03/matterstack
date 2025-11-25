@@ -1,0 +1,22 @@
+from matterstack.core.environment import Environment
+from matterstack.core.objective import Objective, Constraints
+from matterstack.core.domain import Material, Layer, StackTemplate
+from matterstack.core.design_space import DesignSpace
+
+def test_env_factory():
+    env = Environment.marine_spray("3.5 wt%", "35C", 8, 16, 60)
+    assert env.name == "MarineSpray"
+    assert len(env.phases) == 2
+    assert env.n_cycles == 60
+
+def test_design_space():
+    alloy = Material(id="AA7075-T6", kind="alloy")
+    tmpl = StackTemplate(
+        name="AA7075_Coating",
+        substrate=alloy,
+        layers=[Layer(name="primer"), Layer(name="topcoat")],
+    )
+    ds = DesignSpace(tmpl)
+    ds.vary_discrete("primer.formulation", lib="primer_formulations_v0")
+    ds.vary_continuous("topcoat.thickness_um", 30.0, 80.0)
+    assert len(ds.dimensions) == 2

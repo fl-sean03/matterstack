@@ -1,0 +1,4 @@
+{
+  "message": "Please review candidates.csv and approve.",
+  "instructions": "Create 'approved.txt' to approve, or 'rejected.txt' to reject."
+}
