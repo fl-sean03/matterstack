@@ -7,11 +7,11 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 
+from pydantic import Field
 from .workflow import Task
 
 logger = logging.getLogger(__name__)
 
-@dataclass
 class GateTask(Task):
     """
     A Human-in-the-loop task that waits for manual approval or rejection.
@@ -20,14 +20,14 @@ class GateTask(Task):
     1. Writes 'gate_info.json' with instructions/context.
     2. Waits for 'approved.txt' (success) or 'rejected.txt' (failure).
     """
-    command: str = field(default="") # Override Task.command to be optional, calculated in post_init
+    command: str = Field(default="") # Override Task.command to be optional, calculated in post_init
     message: str = "Please approve or reject this step."
     approve_file: str = "approved.txt"
     reject_file: str = "rejected.txt"
     info_file: str = "gate_info.json"
     poll_interval: float = 2.0
     
-    def __post_init__(self):
+    def model_post_init(self, __context: Any) -> None:
         # Configuration for the wrapper
         config = {
             "message": self.message,
@@ -43,6 +43,7 @@ class GateTask(Task):
         # We use 'python3 -m matterstack.core.gate' as the entry point
         cmd = f"python3 -m matterstack.core.gate '{config_json}'"
         self.command = cmd
+        super().model_post_init(__context)
 
 
 class GateTaskWrapper:

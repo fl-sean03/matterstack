@@ -1,0 +1,572 @@
+from __future__ import annotations
+import logging
+import json
+import uuid
+from pathlib import Path
+from typing import Dict, Any, Optional, List, Set, Union
+from datetime import datetime, timezone
+
+from matterstack.core.run import RunHandle, RunMetadata
+from matterstack.core.campaign import Campaign
+from matterstack.core.workflow import Workflow, Task
+from matterstack.core.operators import ExternalRunHandle, ExternalRunStatus
+from matterstack.storage.state_store import SQLiteStateStore
+from matterstack.core.external import ExternalTask
+from matterstack.core.gate import GateTask
+
+logger = logging.getLogger(__name__)
+
+class RunLifecycleError(Exception):
+    pass
+
+def initialize_run(
+    workspace_slug: str,
+    campaign: Campaign,
+    base_path: Path = Path("workspaces"),
+    run_id: Optional[str] = None
+) -> RunHandle:
+    """
+    Initialize a new run environment.
+    
+    1. Resolve run ID and paths.
+    2. Create directory structure.
+    3. Initialize SQLite DB.
+    4. Execute initial plan() and store workflow.
+    """
+    if run_id is None:
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + "_" + str(uuid.uuid4())[:8]
+
+    # workspace/runs/run_id/
+    root_path = base_path / workspace_slug / "runs" / run_id
+    
+    logger.info(f"Initializing run {run_id} at {root_path}")
+    
+    handle = RunHandle(
+        workspace_slug=workspace_slug,
+        run_id=run_id,
+        root_path=root_path
+    )
+    
+    # Create directories
+    handle.root_path.mkdir(parents=True, exist_ok=True)
+    handle.operators_path.mkdir(exist_ok=True)
+    handle.evidence_path.mkdir(exist_ok=True)
+    
+    # Initialize State Store
+    store = SQLiteStateStore(handle.db_path)
+    
+    with store.lock():
+        store.create_run(handle, RunMetadata(status="PENDING"))
+        
+        # Initial Plan
+        # We pass None as state for the first plan, or we could pass an empty dict
+        # depending on Campaign contract. Assuming None is fine for "fresh start".
+        workflow = campaign.plan(state=None)
+        
+        if workflow:
+            store.add_workflow(workflow, run_id=handle.run_id)
+            logger.info(f"Initialized run {run_id} with {len(workflow.tasks)} tasks.")
+        else:
+            logger.info(f"Initialized run {run_id} with no initial workflow (done?).")
+            # store.update_run_status(run_id, "completed") # Method not yet available
+        
+    return handle
+
+def step_run(
+    run_handle: RunHandle,
+    campaign: Campaign,
+    operator_registry: Dict[str, Any] = None # Placeholder for Thrust 5/6
+) -> str:
+    """
+    Execute one 'tick' of the run lifecycle.
+    
+    Returns:
+        Current status of the run ("active", "completed", "failed")
+    """
+    store = SQLiteStateStore(run_handle.db_path)
+    
+    with store.lock():
+        # 0. Check Run Status
+        run_status = store.get_run_status(run_handle.run_id)
+        if run_status == "PENDING":
+             logger.info(f"Run {run_handle.run_id} started (transition from PENDING to RUNNING)")
+             store.set_run_status(run_handle.run_id, "RUNNING")
+             run_status = "RUNNING"
+        
+        if run_status in ["CANCELLED", "FAILED", "COMPLETED"]:
+            logger.info(f"Run {run_handle.run_id} is {run_status}. Skipping execution.")
+            return run_status
+            
+        if run_status == "PAUSED":
+             logger.info(f"Run {run_handle.run_id} is PAUSED. Skipping EXECUTE phase.")
+             # We might still want to POLL external tasks, but for now we skip everything.
+             # This prevents new tasks from being submitted.
+             # If we wanted to allow polling, we'd restructure this.
+             return "PAUSED"
+
+        # 1. POLL Phase: Check external runs
+        active_external = store.get_active_external_runs(run_handle.run_id)
+        
+        # Simple Operator Registry
+        from matterstack.runtime.operators.human import HumanOperator
+        from matterstack.runtime.operators.experiment import ExperimentOperator
+        from matterstack.runtime.operators.hpc import ComputeOperator
+        from matterstack.runtime.backends.local import LocalBackend
+
+        # Instantiate operators
+        local_backend = LocalBackend(workspace_root=run_handle.root_path)
+        operators = {
+            "Human": HumanOperator(),
+            "Experiment": ExperimentOperator(),
+            "Local": ComputeOperator(backend=local_backend, slug="local", operator_name="Local"),
+            "HPC": ComputeOperator(backend=local_backend, slug="hpc", operator_name="HPC")
+        }
+
+        for ext_handle in active_external:
+            op_type = ext_handle.operator_type
+            if op_type in operators:
+                op = operators[op_type]
+                try:
+                    old_status = ext_handle.status
+                    updated_handle = op.check_status(ext_handle)
+                    
+                    if updated_handle.status != old_status:
+                        logger.info(f"External Run {ext_handle.task_id} transitioned to {updated_handle.status}")
+                        
+                        # If completed, try to collect results
+                        if updated_handle.status == ExternalRunStatus.COMPLETED:
+                            try:
+                                result = op.collect_results(updated_handle)
+                                if result.status == ExternalRunStatus.COMPLETED:
+                                    # Store output info in operator_data so analyze can see it
+                                    if result.files:
+                                        # Convert Path objects to strings for JSON serialization
+                                        files_dict = {k: str(v) for k, v in result.files.items()}
+                                        updated_handle.operator_data["output_files"] = files_dict
+                                    if result.data:
+                                        updated_handle.operator_data["output_data"] = result.data
+                            except Exception as e:
+                                logger.error(f"Failed to collect results for {ext_handle.task_id}: {e}")
+                        
+                        store.update_external_run(updated_handle)
+                        
+                        # Sync to Task Status
+                        # Map ExternalRunStatus to JobState strings
+                        status_map = {
+                            "CREATED": "PENDING",
+                            "SUBMITTED": "SUBMITTED",
+                            "RUNNING": "RUNNING",
+                            "WAITING_EXTERNAL": "WAITING_EXTERNAL",
+                            "COMPLETED": "COMPLETED",
+                            "FAILED": "FAILED",
+                            "CANCELLED": "CANCELLED"
+                        }
+                        task_status = status_map.get(updated_handle.status.name, "UNKNOWN")
+                        store.update_task_status(ext_handle.task_id, task_status)
+                        
+                except Exception as e:
+                    logger.error(f"Error checking status for {ext_handle.task_id}: {e}")
+            else:
+                # logger.warning(f"Unknown operator type: {op_type}")
+                pass
+            
+        # 2. PLAN Phase: Check dependencies and find ready tasks
+        tasks = store.get_tasks(run_handle.run_id)
+    
+        # Map task_id -> status
+        task_status_map = {t.task_id: store.get_task_status(t.task_id) for t in tasks}
+        
+        # Calculate stats for logging
+        stats = {
+            "total": len(tasks),
+            "completed": 0,
+            "failed": 0,
+            "active": 0,
+            "ready": 0,
+            "submitted": 0
+        }
+
+        # Identify tasks that are ready to run
+        # Ready = Created (None/PENDING) AND All dependencies are COMPLETED
+        tasks_to_run = []
+        
+        has_active_tasks = False
+        has_failed_tasks = False
+        
+        for task in tasks:
+            current_status = task_status_map.get(task.task_id)
+            
+            if current_status in ["COMPLETED", "SKIPPED"]:
+                stats["completed"] += 1
+                continue
+                
+            if current_status in ["FAILED", "CANCELLED"]:
+                if task.allow_failure:
+                    # Allow run to proceed even if this task failed
+                    pass
+                else:
+                    has_failed_tasks = True
+                stats["failed"] += 1
+                continue
+                
+            if current_status in ["RUNNING", "SUBMITTED", "WAITING_EXTERNAL"]:
+                has_active_tasks = True
+                stats["active"] += 1
+                continue
+                
+            # Status is None or PENDING
+            
+            # Check dependencies
+            deps_met = True
+            for dep_id in task.dependencies:
+                dep_status = task_status_map.get(dep_id)
+                if dep_status != "COMPLETED":
+                    # Check if we should allow failure
+                    # Note: We need to access the task object to check allow_dependency_failure
+                    # but 'tasks' is a list of Task objects which have that field.
+                    # However, get_tasks returns re-hydrated objects.
+                    # Let's assume strict dependency for now unless we look up the dep task object
+                    deps_met = False
+                    break
+            
+            if deps_met:
+                tasks_to_run.append(task)
+                stats["ready"] += 1
+            else:
+                # Still waiting on deps
+                has_active_tasks = True
+
+        # Update submitted count based on what we are about to do
+        stats["submitted"] = len(tasks_to_run)
+
+        # Log Tick Summary
+        logger.info(
+            f"Tick Summary: "
+            f"Ready={stats['ready']}, "
+            f"Submitted={stats['submitted']}, "
+            f"Completed={stats['completed']}, "
+            f"Failed={stats['failed']}, "
+            f"Active={stats['active']}"
+        )
+
+        # 3. EXECUTE Phase
+        
+        # Determine concurrency limit
+        max_hpc_jobs = 10
+        config_path = run_handle.root_path / "config.json"
+        logger.info(f"Checking for config at: {config_path}")
+        if config_path.exists():
+            logger.info(f"Found config.json at {config_path}")
+            try:
+                import json
+                cfg = json.loads(config_path.read_text())
+                max_hpc_jobs = cfg.get("max_hpc_jobs_per_run", 10)
+            except Exception as e:
+                logger.warning(f"Failed to read config.json, using default limit: {e}")
+
+        # Count active HPC runs
+        # We consider RUNNING and WAITING_EXTERNAL as "active" slots for now
+        # Ideally we check operator_type="DirectHPC", but let's count all external runs for safety
+        active_external_count = 0
+        active_external = store.get_active_external_runs(run_handle.run_id)
+        for ext in active_external:
+            if ext.status in [ExternalRunStatus.RUNNING, ExternalRunStatus.WAITING_EXTERNAL, ExternalRunStatus.SUBMITTED]:
+                active_external_count += 1
+        
+        slots_available = max_hpc_jobs - active_external_count
+        if slots_available < 0:
+            slots_available = 0
+            
+        logger.info(f"Concurrency Check: Active={active_external_count}, Limit={max_hpc_jobs}, Slots={slots_available}")
+
+        # Submit ready tasks (up to limit)
+        for task in tasks_to_run:
+            # Check environment for explicit operator request
+            explicit_operator = task.env.get("MATTERSTACK_OPERATOR")
+            
+            # Check config for default execution mode
+            default_mode = "Simulation" # Default changed to explicit Simulation
+            if config_path.exists():
+                try:
+                    import json
+                    cfg = json.loads(config_path.read_text())
+                    default_mode = cfg.get("execution_mode", "Simulation")
+                    logger.info(f"Default execution mode: {default_mode}")
+                except:
+                    pass
+            
+            # Determine effective operator
+            # Priority: Task Env > Task Type > Config Default
+            operator_type = None
+            
+            if explicit_operator:
+                operator_type = explicit_operator
+            elif isinstance(task, GateTask):
+                operator_type = "Human" # GateTask maps to HumanOperator
+            elif isinstance(task, ExternalTask):
+                 pass
+            elif default_mode == "HPC":
+                operator_type = "HPC"
+            elif default_mode == "Local":
+                operator_type = "Local"
+            
+            # Apply concurrency limit if it's an external run (Operator)
+            is_external = operator_type is not None or isinstance(task, (ExternalTask, GateTask))
+            
+            if is_external:
+                if slots_available <= 0:
+                    logger.info(f"Concurrency limit reached ({max_hpc_jobs}). Postponing task {task.task_id}")
+                    continue
+                slots_available -= 1
+
+            logger.info(f"Submitting task {task.task_id}")
+            
+            if operator_type:
+                 # Register and Dispatch to Operator
+                 logger.info(f"Dispatching to Operator: {operator_type}")
+                 
+                 # Instantiate Operator (Redundant instantiation, ideally registry is passed in)
+                 from matterstack.runtime.operators.human import HumanOperator
+                 from matterstack.runtime.operators.experiment import ExperimentOperator
+                 from matterstack.runtime.operators.hpc import ComputeOperator
+                 from matterstack.runtime.backends.local import LocalBackend
+
+                 local_backend = LocalBackend(workspace_root=run_handle.root_path)
+                 operators = {
+                    "Human": HumanOperator(),
+                    "Experiment": ExperimentOperator(),
+                    "Local": ComputeOperator(backend=local_backend, slug="local", operator_name="Local"),
+                    "HPC": ComputeOperator(backend=local_backend, slug="hpc", operator_name="HPC")
+                 }
+                 
+                 if operator_type in operators:
+                     op = operators[operator_type]
+                     try:
+                         # 1. Prepare
+                         ext_handle = op.prepare_run(run_handle, task)
+                         store.register_external_run(ext_handle, run_handle.run_id)
+                         
+                         # 2. Submit
+                         ext_handle = op.submit(ext_handle)
+                         store.update_external_run(ext_handle)
+                         
+                         # Update Task Status
+                         store.update_task_status(task.task_id, "WAITING_EXTERNAL")
+                         has_active_tasks = True
+                         
+                     except Exception as e:
+                         logger.error(f"Failed to dispatch operator {operator_type}: {e}")
+                         import traceback
+                         traceback.print_exc()
+                         store.update_task_status(task.task_id, "FAILED")
+                 else:
+                     logger.error(f"Unknown operator type requested: {operator_type}")
+                     store.update_task_status(task.task_id, "FAILED")
+                 
+            elif isinstance(task, (ExternalTask, GateTask)):
+                 # Fallback for legacy classes not caught above
+                 ext_handle = ExternalRunHandle(
+                     task_id=task.task_id,
+                     operator_type="stub",
+                     status=ExternalRunStatus.WAITING_EXTERNAL
+                 )
+                 store.register_external_run(ext_handle, run_handle.run_id)
+                 store.update_task_status(task.task_id, "WAITING_EXTERNAL")
+                 has_active_tasks = True
+                 
+            else:
+                # Local Compute Task - SIMULATION MODE for Verification
+                logger.info(f"Simulating Local execution for {task.task_id}")
+                store.update_task_status(task.task_id, "COMPLETED")
+
+        # 4. ANALYZE Phase
+        # Check if workflow is complete (no active tasks, no pending tasks)
+        # If complete, run campaign.analyze() -> plan()
+        
+        if not has_active_tasks and not tasks_to_run:
+            # All tasks are terminal.
+            # Check for failures
+            if has_failed_tasks:
+                logger.error("Workflow has failed tasks. Stopping.")
+                store.set_run_status(run_handle.run_id, "FAILED", reason="Workflow tasks failed")
+                return "FAILED"
+                
+            # All completed successfully?
+            # Re-fetch tasks to be sure we have latest status
+            # Actually we iterated all tasks above.
+            # If we reached here, all tasks are COMPLETED/SKIPPED/FAILED.
+            # Since has_failed_tasks is False, all must be COMPLETED/SKIPPED.
+            
+            logger.info("Current workflow completed. Analyzing...")
+            
+            # Construct rich results dict
+            results = {}
+            for t in tasks:
+                status = task_status_map.get(t.task_id, "UNKNOWN")
+                res_entry = {"status": status}
+                
+                # Retrieve external run data if available
+                ext_run = store.get_external_run(t.task_id)
+                if ext_run and ext_run.operator_data:
+                    if "output_files" in ext_run.operator_data:
+                        res_entry["files"] = ext_run.operator_data["output_files"]
+                    if "output_data" in ext_run.operator_data:
+                        res_entry["data"] = ext_run.operator_data["output_data"]
+                
+                results[t.task_id] = res_entry
+            
+            # Load Campaign State from JSON file in run root (Mock Persistence)
+            state_file = run_handle.root_path / "campaign_state.json"
+            current_state = None
+            
+            if state_file.exists():
+                try:
+                    # We need to deserialize it properly.
+                    # Ideally, campaign.deserialize_state(json) but we don't have that interface.
+                    # We'll pass the dict and let Pydantic handle it if possible,
+                    # or rely on Campaign.analyze handling a dict (which it might not).
+                    # The CoatingsCampaign expects CoatingsState object.
+                    # We'll rely on our specific implementation knowledge for now.
+                    import json
+                    state_dict = json.loads(state_file.read_text())
+                    
+                    # Dynamic import to get the class? Or assume campaign handles dict?
+                    # Let's assume campaign.analyze can take the dict if we modify it,
+                    # OR we try to instantiate CoatingsState here if we knew the type.
+                    # But we are in generic orchestrator.
+                    
+                    # Hack: We pass the dict. The CoatingsCampaign will need to handle dict input.
+                    # I will modify CoatingsCampaign to accept dict.
+                    current_state = state_dict
+                except Exception as e:
+                    logger.error(f"Failed to load state: {e}")
+
+            # Analyze
+            # Note: CoatingCampaign.analyze expects CoatingsState object or None.
+            # If we pass a dict, it might fail if not handled.
+            # I will update CoatingsCampaign to handle dict.
+            new_state = campaign.analyze(current_state, results)
+            
+            # Persist new state
+            if new_state:
+                # Assume it's a Pydantic model
+                if hasattr(new_state, "model_dump_json"):
+                    state_file.write_text(new_state.model_dump_json())
+                elif isinstance(new_state, dict):
+                    import json
+                    state_file.write_text(json.dumps(new_state))
+
+            # Plan next steps
+            new_workflow = campaign.plan(new_state)
+            
+            if new_workflow:
+                logger.info(f"Campaign generated new workflow with {len(new_workflow.tasks)} tasks.")
+                store.add_workflow(new_workflow, run_handle.run_id)
+                return "RUNNING"
+            else:
+                logger.info("Campaign has no further work. Run Completed.")
+                store.set_run_status(run_handle.run_id, "COMPLETED")
+                return "COMPLETED"
+
+        return "RUNNING"
+
+def run_until_completion(run_handle: RunHandle, campaign: Campaign, poll_interval: float = 1.0) -> str:
+    """
+    Execute the campaign loop locally until the run is completed, failed, or cancelled.
+    
+    This function blocks until the run reaches a terminal state.
+    It handles:
+    - Calling step_run() repeatedly.
+    - Waiting if the run is PAUSED.
+    - Retrying if the run is locked by another process (graceful contention).
+    
+    Args:
+        run_handle: The handle to the run.
+        campaign: The campaign instance.
+        poll_interval: Time to wait between ticks (seconds).
+        
+    Returns:
+        The final status of the run.
+    """
+    import time
+    
+    logger.info(f"Starting local execution loop for run {run_handle.run_id}")
+    
+    while True:
+        try:
+            status = step_run(run_handle, campaign)
+            
+            if status in ["COMPLETED", "FAILED", "CANCELLED"]:
+                logger.info(f"Run {run_handle.run_id} finished with status: {status}")
+                return status
+                
+            if status == "PAUSED":
+                logger.info(f"Run {run_handle.run_id} is PAUSED. Waiting...")
+                time.sleep(5)
+                continue
+                
+        except RuntimeError as re:
+            if "Could not acquire lock" in str(re):
+                logger.warning(f"Run {run_handle.run_id} is locked by another process. Retrying...")
+                time.sleep(1)
+                continue
+            else:
+                raise re
+        except Exception as e:
+            logger.error(f"Error in execution loop: {e}")
+            raise
+            
+        time.sleep(poll_interval)
+
+def list_active_runs(base_path: Path = Path("workspaces")) -> List[RunHandle]:
+    """
+    Scan for runs that are active (PENDING, RUNNING, PAUSED).
+    
+    Iterates through all workspaces in base_path and their runs.
+    """
+    active_runs = []
+    
+    if not base_path.exists():
+        return active_runs
+        
+    # Iterate workspaces
+    for ws_dir in base_path.iterdir():
+        if not ws_dir.is_dir():
+            continue
+            
+        runs_dir = ws_dir / "runs"
+        if not runs_dir.exists():
+            continue
+            
+        # Iterate runs
+        for run_dir in runs_dir.iterdir():
+            if not run_dir.is_dir():
+                continue
+                
+            db_path = run_dir / "state.sqlite"
+            if not db_path.exists():
+                continue
+                
+            try:
+                # Construct RunHandle
+                run_id = run_dir.name
+                handle = RunHandle(
+                    workspace_slug=ws_dir.name,
+                    run_id=run_id,
+                    root_path=run_dir
+                )
+                
+                # Check status
+                # Note: We create a new store instance for each check.
+                # This is lightweight enough for discovery.
+                store = SQLiteStateStore(handle.db_path)
+                status = store.get_run_status(run_id)
+                
+                if status in ["PENDING", "RUNNING", "PAUSED"]:
+                    active_runs.append(handle)
+                    
+            except Exception as e:
+                logger.warning(f"Failed to inspect run at {run_dir}: {e}")
+                continue
+                
+    return active_runs

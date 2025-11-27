@@ -4,6 +4,49 @@ MatterStack is a workflow orchestration platform designed for materials science 
 
 By automating campaigns—from high-throughput screening to active learning loops—MatterStack allows researchers to manage complex scientific workflows more efficiently.
 
+## 🚀 5-Minute Quickstart
+
+### 1. Installation
+
+```bash
+git clone https://github.com/matterstack/matterstack.git
+cd matterstack
+pip install -e .
+```
+
+### 2. Verify Installation
+
+Run the self-test command to verify that your environment is correctly configured:
+
+```bash
+matterstack self-test
+```
+_If the command is not found, try `python3 -m matterstack.cli.main self-test`._
+
+### 3. Run a Campaign
+
+MatterStack uses **workspaces** to organize campaigns. Let's run the **Battery Electrolyte Screening** demo:
+
+**Initialize the Run:**
+```bash
+matterstack init battery_screening
+# Output: Run initialized: 20251126_...
+```
+
+**Execute the Campaign Loop:**
+```bash
+# Replace [RUN_ID] with the ID from the previous step
+matterstack loop [RUN_ID]
+```
+
+**Export Results:**
+```bash
+matterstack export-evidence [RUN_ID]
+# Generates a report in workspaces/battery_screening/runs/[RUN_ID]/evidence/report.md
+```
+
+---
+
 ## Key Features
 
 *   **Workflow Orchestration**: Manage dependencies between simulation, analysis, and decision tasks.
@@ -13,7 +56,7 @@ By automating campaigns—from high-throughput screening to active learning loop
 
 ## Real-World Demos
 
-Explore our "Mission-aligned" demonstration projects, showcasing MatterStack in diverse scientific domains:
+Explore our "Mission-aligned" demonstration projects:
 
 ### 1. [Battery Electrolyte Screening](workspaces/battery_screening)
 A high-throughput screening campaign for identifying promising solid-state electrolyte candidates. Demonstrates parallel execution and result aggregation.
@@ -26,25 +69,6 @@ Simulation of a self-driving laboratory environment for thin film synthesis. Ill
 
 ### 4. [Catalyst Discovery (Human-in-the-Loop)](workspaces/catalyst_human_in_loop)
 A catalyst design workflow that pauses for expert validation before proceeding to expensive compute steps. Demonstrates seamless human-AI collaboration.
-
-## Quick Start
-
-### Installation
-
-```bash
-git clone https://github.com/matterstack/matterstack.git
-cd matterstack
-pip install -e .
-```
-
-### Running a Demo
-
-Navigate to any workspace and run the entry point:
-
-```bash
-cd workspaces/battery_screening
-python main.py
-```
 
 ## Project Structure
 

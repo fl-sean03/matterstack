@@ -34,36 +34,54 @@ def _parse_sacct_line(line: str) -> Optional[JobStatus]:
     )
 
 
+def _map_slurm_state(raw_state: str) -> JobState:
+    """
+    Map raw Slurm state strings to canonical JobState.
+    Handles both long forms (sacct) and short codes (squeue) where unambiguous,
+    though squeue typically returns short codes.
+    """
+    s = raw_state.upper()
+
+    # Map PENDING, REQUEUED -> QUEUED
+    if s.startswith("PENDING") or s.startswith("REQUEUED") or s == "PD":
+        return JobState.QUEUED
+    
+    # Map RUNNING, COMPLETING -> RUNNING
+    # CG = Completing, R = Running
+    if s.startswith("RUNNING") or s.startswith("COMPLETING") or s in {"R", "CG"}:
+        return JobState.RUNNING
+
+    # Map COMPLETED -> COMPLETED_OK
+    # CD = Completed (squeue)
+    if s.startswith("COMPLETED") or s == "CD":
+        return JobState.COMPLETED_OK
+
+    # Map FAILED, TIMEOUT, NODE_FAIL, etc. -> COMPLETED_ERROR
+    # F = Failed, TO = Timeout, NF = Node Fail, BF = Boot Fail
+    error_states = {"FAILED", "TIMEOUT", "NODE_FAIL", "BOOT_FAIL", "OUT_OF_MEMORY", "DEADLINE"}
+    error_codes = {"F", "TO", "NF", "BF", "OOM", "DL"}
+    
+    if any(s.startswith(st) for st in error_states) or s in error_codes:
+        return JobState.COMPLETED_ERROR
+
+    # Map CANCELLED* -> CANCELLED
+    # CA = Cancelled
+    if s.startswith("CANCELLED") or s == "CA":
+        return JobState.CANCELLED
+
+    return JobState.UNKNOWN
+
+
 def _normalize_state_from_sacct(state_raw: str) -> JobState:
     """Map sacct state strings to JobState."""
-    s = state_raw.upper()
-    if s.startswith("PENDING"):
-        return JobState.PENDING
-    if s.startswith("RUNNING"):
-        return JobState.RUNNING
-    if s.startswith("COMPLETED"):
-        return JobState.COMPLETED
-    if s.startswith("CANCELLED") or s.startswith("CANCELLED+"):
-        return JobState.CANCELLED
-    if s.startswith("FAILED") or s.startswith("TIMEOUT") or s.startswith("NODE_FAIL"):
-        return JobState.FAILED
-    return JobState.UNKNOWN
+    return _map_slurm_state(state_raw)
 
 
 def _normalize_state_from_squeue(code: str) -> JobState:
     """
     Map squeue two-letter state codes to JobState.
     """
-    c = code.upper()
-    if c == "PD":  # pending
-        return JobState.PENDING
-    if c in {"R", "CG"}:  # running or completing
-        return JobState.RUNNING
-    if c in {"CA"}:
-        return JobState.CANCELLED
-    if c in {"F", "TO", "NF"}:
-        return JobState.FAILED
-    return JobState.UNKNOWN
+    return _map_slurm_state(code)
 
 
 async def submit_job(ssh: SSHClient, workspace: str, batch_script_rel_path: str) -> str:
@@ -134,10 +152,10 @@ async def get_job_status(ssh: SSHClient, job_id: str) -> JobStatus:
                 exit_code=None
             )
 
-    # If both sacct and squeue fail, return UNKNOWN state
+    # If both sacct and squeue fail, return LOST state
     return JobStatus(
         job_id=job_id,
-        state=JobState.UNKNOWN,
+        state=JobState.LOST,
         reason="Job not found in sacct or squeue",
         exit_code=None
     )

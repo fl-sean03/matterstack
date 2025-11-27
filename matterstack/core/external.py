@@ -8,11 +8,11 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, Any, Union
 
+from pydantic import Field
 from .workflow import Task
 
 logger = logging.getLogger(__name__)
 
-@dataclass
 class ExternalTask(Task):
     """
     A specialized Task that coordinates with an external process via file system.
@@ -27,10 +27,10 @@ class ExternalTask(Task):
     """
     request_path: str = "request.json"
     response_path: str = "response.json"
-    request_data: Dict[str, Any] = field(default_factory=dict)
+    request_data: Dict[str, Any] = Field(default_factory=dict)
     poll_interval: float = 5.0
     
-    def __post_init__(self):
+    def model_post_init(self, __context: Any) -> None:
         # We override the command to run our internal poller wrapper
         # The wrapper code needs to be available in the environment.
         # We assume 'matterstack' is installed or PYTHONPATH is set.
@@ -53,9 +53,10 @@ class ExternalTask(Task):
         
         self.command = cmd
         
-        # We ensure the image has python installed. 
-        # If the user provided an image, we trust it. 
+        # We ensure the image has python installed.
+        # If the user provided an image, we trust it.
         # If not, the backend default applies (which usually has python).
+        super().model_post_init(__context)
 
 
 class ExternalTaskWrapper:

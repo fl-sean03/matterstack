@@ -6,12 +6,12 @@ from enum import Enum
 from .workflow import Task
 
 class JobState(str, Enum):
-    PENDING = "PENDING"
+    QUEUED = "QUEUED"
     RUNNING = "RUNNING"
-    COMPLETED = "COMPLETED"
-    PARTIAL_SUCCESS = "PARTIAL_SUCCESS"
-    FAILED = "FAILED"
+    COMPLETED_OK = "COMPLETED_OK"
+    COMPLETED_ERROR = "COMPLETED_ERROR"
     CANCELLED = "CANCELLED"
+    LOST = "LOST"
     UNKNOWN = "UNKNOWN"
 
 @dataclass

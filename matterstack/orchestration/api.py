@@ -75,9 +75,10 @@ async def run_task_async(
         # Poll until the job reaches a terminal JobState
         status = await backend.poll(job_id)
         while status.state not in (
-            JobState.COMPLETED,
-            JobState.FAILED,
+            JobState.COMPLETED_OK,
+            JobState.COMPLETED_ERROR,
             JobState.CANCELLED,
+            JobState.LOST,
         ):
             await asyncio.sleep(poll_interval)
             status = await backend.poll(job_id)
@@ -87,7 +88,7 @@ async def run_task_async(
             task=task,
             job_id=job_id,
             status=JobStatus(
-                job_id=job_id, state=JobState.FAILED, reason=f"Polling failed: {e}"
+                job_id=job_id, state=JobState.COMPLETED_ERROR, reason=f"Polling failed: {e}"
             ),
             logs=TaskLogs(stdout="", stderr=str(e)),
             workspace_path=_infer_workspace_path(backend, job_id),
@@ -203,7 +204,7 @@ async def run_workflow_async(
             dep_id
             for dep_id in task.dependencies
             if dep_id in task_results
-            and task_results[dep_id].status.state in (JobState.FAILED, JobState.CANCELLED)
+            and task_results[dep_id].status.state in (JobState.COMPLETED_ERROR, JobState.CANCELLED)
         ]
 
         # Check if we should skip due to failed dependencies
@@ -243,7 +244,7 @@ async def run_workflow_async(
 
         task_results[task.task_id] = result
 
-        if result.status.state == JobState.FAILED:
+        if result.status.state == JobState.COMPLETED_ERROR:
             logger.error(f"Task {task.task_id} failed: {result.status.reason}")
             if not continue_on_error:
                 logger.error("Aborting workflow due to task failure (continue_on_error=False).")

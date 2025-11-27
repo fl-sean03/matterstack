@@ -3,7 +3,10 @@ import os
 import shlex
 import shutil
 import asyncio
+import subprocess
 import logging
+import json
+import dataclasses
 from typing import Dict, Optional, Union, Any
 from pathlib import Path
 
@@ -14,33 +17,68 @@ logger = logging.getLogger(__name__)
 
 class LocalBackend(ComputeBackend):
     """
-    Local Backend for executing Tasks as asynchronous subprocesses.
+    Local Backend for executing Tasks using subprocess.Popen.
     Supports a "dry_run" mode for verification.
     """
 
     def __init__(self, workspace_root: str = "workspace", dry_run: bool = False):
         self.workspace_root = Path(workspace_root).resolve()
         self.dry_run = dry_run
+        self.state_file = self.workspace_root / "local_backend_state.json"
+        
         # Map job_id -> JobStatus
         self._jobs: Dict[str, JobStatus] = {}
-        # Map job_id -> asyncio.subprocess.Process
-        self._processes: Dict[str, asyncio.subprocess.Process] = {}
+        # Map job_id -> subprocess.Popen
+        self._processes: Dict[str, subprocess.Popen] = {}
 
         if not self.dry_run:
             self.workspace_root.mkdir(parents=True, exist_ok=True)
+            self._load_state()
+
+    def _load_state(self):
+        if self.state_file.exists():
+            try:
+                data = json.loads(self.state_file.read_text())
+                for job_id, status_data in data.items():
+                    # Reconstruct JobStatus
+                    self._jobs[job_id] = JobStatus(
+                        job_id=status_data["job_id"],
+                        state=JobState(status_data["state"]),
+                        exit_code=status_data.get("exit_code"),
+                        reason=status_data.get("reason")
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to load local backend state: {e}")
+
+    def _save_state(self):
+        if self.dry_run:
+            return
+        try:
+            data = {}
+            for job_id, status in self._jobs.items():
+                data[job_id] = {
+                    "job_id": status.job_id,
+                    "state": status.state.value,
+                    "exit_code": status.exit_code,
+                    "reason": status.reason
+                }
+            self.state_file.write_text(json.dumps(data, indent=2))
+        except Exception as e:
+            logger.warning(f"Failed to save local backend state: {e}")
 
     async def submit(self, task: Task) -> str:
         job_id = task.task_id
         task_dir = self.workspace_root / job_id
         
-        self._jobs[job_id] = JobStatus(job_id, JobState.PENDING)
+        self._jobs[job_id] = JobStatus(job_id, JobState.QUEUED)
+        self._save_state()
 
         if self.dry_run:
             print(f"[DRY-RUN] mkdir -p {task_dir}")
             self._stage_files_dry_run(task, task_dir)
             print(f"[DRY-RUN] cd {task_dir} && {task.command}")
             # In dry-run, we just mark it as COMPLETED for workflow progression simulation
-            self._jobs[job_id] = JobStatus(job_id, JobState.COMPLETED, exit_code=0)
+            self._jobs[job_id] = JobStatus(job_id, JobState.COMPLETED_OK, exit_code=0)
             return job_id
 
         # Real Execution
@@ -63,26 +101,42 @@ class LocalBackend(ComputeBackend):
             # Merge environment
             env = {**os.environ, **task.env}
             
-            process = await asyncio.create_subprocess_shell(
-                task.command,
-                cwd=str(task_dir),
-                stdout=stdout_file,
-                stderr=stderr_file,
-                env=env
-            )
+            # Wrap command to capture exit code
+            # We use a subshell to ensure exit code is captured even if command fails
+            # Use absolute path for exit_code file to be safe
+            exit_code_path = task_dir / "exit_code"
+            wrapped_command = f"({task.command}); echo $? > {exit_code_path}"
             
-            # Close file handles in parent (subprocess has them now)
+            # Use subprocess.Popen instead of asyncio for robustness in sync-wrapped contexts
+            logger.info(f"Executing command in {task_dir}: {wrapped_command}")
+            try:
+                process = subprocess.Popen(
+                    wrapped_command,
+                    shell=True,
+                    cwd=str(task_dir),
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    env=env
+                )
+                logger.info(f"Process started with PID {process.pid}")
+            except Exception as e:
+                logger.error(f"Failed to start subprocess: {e}")
+                raise
+            
+            # Close file handles in parent
             stdout_file.close()
             stderr_file.close()
 
             self._processes[job_id] = process
             self._jobs[job_id] = JobStatus(job_id, JobState.RUNNING)
+            self._save_state()
             
             return job_id
 
         except Exception as e:
             logger.exception(f"Failed to submit task {job_id}")
-            self._jobs[job_id] = JobStatus(job_id, JobState.FAILED, reason=str(e))
+            self._jobs[job_id] = JobStatus(job_id, JobState.COMPLETED_ERROR, reason=str(e))
+            self._save_state()
             return job_id
 
     def _stage_files(self, task: Task, task_dir: Path):
@@ -116,32 +170,45 @@ class LocalBackend(ComputeBackend):
                  print(f"[DRY-RUN] write string to {task_dir}/{filename} ({len(content)} chars)")
 
     async def poll(self, job_id: str) -> JobStatus:
-        # Check if we have a process object
-        process = self._processes.get(job_id)
         current_status = self._jobs.get(job_id)
 
         if not current_status:
              return JobStatus(job_id, JobState.UNKNOWN)
 
         # If already terminal, return it
-        if current_status.state in [JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED]:
+        if current_status.state in [JobState.COMPLETED_OK, JobState.COMPLETED_ERROR, JobState.CANCELLED]:
             return current_status
 
-        if process:
-            # Check if process has finished
-            return_code = process.returncode
-            if return_code is not None:
-                # Process finished
-                if return_code == 0:
-                    state = JobState.COMPLETED
-                else:
-                    state = JobState.FAILED
-                
-                self._jobs[job_id] = JobStatus(job_id, state, exit_code=return_code)
-            else:
-                # Still running
-                pass
+        # Check for exit_code file in task dir
+        task_dir = self.workspace_root / job_id
+        exit_code_file = task_dir / "exit_code"
         
+        if exit_code_file.exists():
+            try:
+                exit_code = int(exit_code_file.read_text().strip())
+                if exit_code == 0:
+                    state = JobState.COMPLETED_OK
+                else:
+                    state = JobState.COMPLETED_ERROR
+                
+                self._jobs[job_id] = JobStatus(job_id, state, exit_code=exit_code)
+                self._save_state()
+                return self._jobs[job_id]
+            except:
+                pass
+
+        # Fallback to process object if available (for immediate feedback)
+        process = self._processes.get(job_id)
+        if process:
+            return_code = process.poll()
+            if return_code is not None:
+                if return_code == 0:
+                    state = JobState.COMPLETED_OK
+                else:
+                    state = JobState.COMPLETED_ERROR
+                self._jobs[job_id] = JobStatus(job_id, state, exit_code=return_code)
+                self._save_state()
+
         return self._jobs[job_id]
 
     async def download(self, job_id: str, remote_path: str, local_path: str) -> None:
@@ -167,14 +234,15 @@ class LocalBackend(ComputeBackend):
 
     async def cancel(self, job_id: str) -> None:
         process = self._processes.get(job_id)
-        if process and process.returncode is None:
+        if process and process.poll() is None:
             process.terminate()
             try:
-                await asyncio.wait_for(process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
+                process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
                 process.kill()
             
             self._jobs[job_id] = JobStatus(job_id, JobState.CANCELLED)
+            self._save_state()
 
     async def get_logs(self, job_id: str) -> Dict[str, str]:
         task_dir = self.workspace_root / job_id

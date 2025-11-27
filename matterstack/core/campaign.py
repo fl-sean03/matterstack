@@ -1,40 +1,36 @@
 from abc import ABC, abstractmethod
-from typing import Optional
-from matterstack.core.domain import DesignSpace
-from matterstack.core.environment import Environment
+from typing import Optional, Any
 from matterstack.core.workflow import Workflow
-from matterstack.core.backend import ComputeBackend
 
 class Campaign(ABC):
     """
-    Abstract Base Class for a Campaign.
-    Defines the high-level logic of compiling domain objects into a runtime Workflow.
+    Abstract Base Class for a Campaign (Stateless).
+    
+    The Campaign logic is now purely functional:
+    1. plan(state) -> Workflow: Generates the next set of tasks based on current state.
+    2. analyze(result) -> State: Updates the campaign state based on new results.
+    
+    The orchestrator manages persistence of the state and execution of the workflow.
     """
-    def __init__(self, design_space: DesignSpace, environment: Environment, backend: ComputeBackend):
-        self.design_space = design_space
-        self.environment = environment
-        self.backend = backend
-
+    
     @abstractmethod
-    def compile(self) -> Workflow:
+    def plan(self, state: Any) -> Optional[Workflow]:
         """
-        Transforms the Domain objects into a Runtime DAG (Workflow).
+        Generate the workflow for the current iteration based on the provided state.
+        Return None if no work is needed (campaign finished).
         """
         pass
-
-    async def run(self) -> None:
+    
+    @abstractmethod
+    def analyze(self, state: Any, results: Any) -> Any:
         """
-        Calls compile() then submits the Workflow to the Backend.
+        Analyze the results of the execution and return the updated state.
+        
+        Args:
+            state: The current campaign state.
+            results: The results from the executed workflow (e.g. from EvidenceBundle).
+            
+        Returns:
+            The new updated state object.
         """
-        workflow = self.compile()
-        
-        # In Phase 2, we just iterate and submit.
-        # Dependency handling is left to the specific Backend implementation
-        # or the workflow definition itself if the backend supports DAGs.
-        # Since ComputeBackend.submit takes a single Task, we iterate.
-        sorted_tasks = workflow.get_topo_sorted_tasks()
-        
-        for task in sorted_tasks:
-            job_id = await self.backend.submit(task)
-            # Potentially log the job_id or map it back to the task for dependencies
-            # But the current Interface doesn't explicitly require it here.
+        pass

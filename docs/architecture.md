@@ -66,3 +66,58 @@ The abstraction layer for compute resources.
 *   **LocalBackend**: Runs tasks as subprocesses on the local machine. Ideal for development.
 *   **SlurmBackend**: Submits tasks as Slurm jobs via SSH. Handles job scripts, environment loading, and polling.
 *   **Interface**: All backends implement a common interface (`submit`, `poll`, `get_logs`, `cancel`), making scientific code platform-agnostic.
+
+### 6. Run Lifecycle States
+
+Each Run goes through a defined lifecycle managed by the Orchestrator and stored in the `StateStore`.
+
+*   **PENDING**: Initialized but not yet started.
+*   **RUNNING**: Actively executing the campaign loop.
+*   **PAUSED**: Execution suspended by user. No new tasks are submitted.
+*   **COMPLETED**: Campaign finished successfully.
+*   **FAILED**: Campaign stopped due to errors.
+*   **CANCELLED**: Terminated by user request.
+
+### 7. HPC Job States
+
+To ensure determinism across different backends (Slurm, PBS, Local), MatterStack normalizes compute job states into a canonical enum `JobState`.
+
+*   `QUEUED`: Submitted and waiting for resources.
+*   `RUNNING`: Actively executing.
+*   `COMPLETED_OK`: Finished with exit code 0.
+*   `COMPLETED_ERROR`: Finished with non-zero exit code.
+*   `CANCELLED`: Stopped by scheduler or user.
+*   `LOST`: Backend cannot locate the job (e.g., purged from history).
+
+## Data Layout & Persistence
+
+### Run Directory Structure
+MatterStack organizes execution artifacts and state in a structured layout rooted at the run directory. This ensures that all data related to a scientific campaign is self-contained and portable.
+
+```text
+/path/to/workspace/runs/<run_id>/
+├── state.sqlite        # Single source of truth for run state (SQLite database)
+├── run.lock            # File lock for concurrency control
+├── campaign_state.json # Checkpointed state of the Campaign object
+└── tasks/              # Directory for individual task execution
+    ├── task_001/
+    │   ├── stdout.log
+    │   ├── stderr.log
+    │   └── results.json
+    └── ...
+```
+
+*   **`state.sqlite`**: Stores the Task Graph, status of every task, and metadata. It replaces the need for a separate heavy database server.
+*   **`run.lock`**: A zero-byte file used exclusively for locking.
+*   **`campaign_state.json`**: Stores the domain-specific scientific state (e.g., active learning model parameters, candidate lists).
+
+### Concurrency & Locking
+To support long-running campaigns where multiple processes might interact with the state (e.g., the main loop, manual overrides via CLI, separate operator processes), MatterStack implements a strict file-based locking model.
+
+*   **Mechanism**: We use `fcntl.flock` (exclusive non-blocking lock) on the `run.lock` file.
+*   **Behavior**:
+    *   Any process attempting to write to `state.sqlite` or modify `campaign_state.json` must first acquire the lock.
+    *   If the lock is held by another process, the requester fails fast (or waits, depending on configuration), preventing race conditions.
+    *   Reads can be performed without the lock (SQLite handles internal concurrency), but logical consistency for complex updates requires the application-level lock.
+
+This model allows MatterStack to scale from a single laptop to an HPC cluster where multiple job submission scripts might be running simultaneously, ensuring data integrity without complex infrastructure.

@@ -1,0 +1,182 @@
+{
+  "cand_0000_friction": {
+    "job_id": "cand_0000_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0000_dissolution": {
+    "job_id": "cand_0000_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0001_friction": {
+    "job_id": "cand_0001_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0001_dissolution": {
+    "job_id": "cand_0001_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0002_friction": {
+    "job_id": "cand_0002_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0002_dissolution": {
+    "job_id": "cand_0002_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0003_friction": {
+    "job_id": "cand_0003_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0003_dissolution": {
+    "job_id": "cand_0003_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0004_friction": {
+    "job_id": "cand_0004_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0004_dissolution": {
+    "job_id": "cand_0004_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0005_friction": {
+    "job_id": "cand_0005_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0005_dissolution": {
+    "job_id": "cand_0005_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0006_friction": {
+    "job_id": "cand_0006_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0006_dissolution": {
+    "job_id": "cand_0006_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0007_friction": {
+    "job_id": "cand_0007_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0007_dissolution": {
+    "job_id": "cand_0007_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0008_friction": {
+    "job_id": "cand_0008_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0008_dissolution": {
+    "job_id": "cand_0008_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0009_friction": {
+    "job_id": "cand_0009_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0009_dissolution": {
+    "job_id": "cand_0009_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0024_friction": {
+    "job_id": "cand_0024_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0024_dissolution": {
+    "job_id": "cand_0024_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0017_friction": {
+    "job_id": "cand_0017_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0017_dissolution": {
+    "job_id": "cand_0017_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0018_friction": {
+    "job_id": "cand_0018_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0018_dissolution": {
+    "job_id": "cand_0018_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0015_friction": {
+    "job_id": "cand_0015_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0015_dissolution": {
+    "job_id": "cand_0015_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0021_friction": {
+    "job_id": "cand_0021_friction",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "cand_0021_dissolution": {
+    "job_id": "cand_0021_dissolution",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  }
+}

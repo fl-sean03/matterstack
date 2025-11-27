@@ -1,178 +1,185 @@
 import sys
 import os
+import json
 import subprocess
 import time
+import threading
 from pathlib import Path
+from typing import Optional, Dict, Any
 
-# Ensure matterstack is in path (it is in current workspace)
-sys.path.append(os.getcwd())
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from matterstack.core.workflow import Workflow, Task
-from matterstack.core.external import ExternalTask
-from matterstack.orchestration.api import run_workflow
-from matterstack.runtime.backends.local import LocalBackend
+from matterstack import Campaign, Task, Workflow, initialize_run, run_until_completion
+from matterstack.runtime.manifests import ExternalStatus
 
-def main():
-    print("\n--- SIMULATION MODE: All data is synthetic and for demonstration purposes only ---\n")
-    print("=== Thin Film Lab Workflow ===")
+# Helper to simulate robot/lab equipment behavior for ExperimentOperator
+def simulate_robot_daemon(run_root: Path):
+    """
+    Watches runs/<run_id>/operators/experiment/ for requests.
+    Consumes experiment_request.json and produces experiment_result.json.
+    """
+    operators_dir = run_root / "operators" / "experiment"
+    print(f"[Robot Daemon] Watching {operators_dir}...")
     
-    # 0. Start the Mock Robot Daemon in background
-    print("Starting Robot Daemon...")
-    # Using cwd as the watch directory for simplicity of the demo
-    # In reality, it might watch a specific shared folder.
-    # We pass "." so it watches the workspace root or where tasks run.
-    # But tasks run in subdirectories. So we should tell robot to watch recursively or the specific task dir.
-    # Our mock_robot.py recursively watches "."
+    processed_uuids = set()
     
-    robot_proc = subprocess.Popen(
-        [sys.executable, "scripts/mock_robot.py", "."],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=os.path.dirname(os.path.abspath(__file__)) # run from workspace dir
-    )
-    
-    # Give it a moment to start
-    time.sleep(1)
-    
-    try:
-        # Define Workflow
-        wf = Workflow()
+    while True:
+        if operators_dir.exists():
+            for op_dir in operators_dir.iterdir():
+                if op_dir.is_dir() and op_dir.name not in processed_uuids:
+                    # New experiment request found
+                    req_path = op_dir / "experiment_request.json"
+                    if req_path.exists():
+                        print(f"[Robot Daemon] Processing request in: {op_dir.name}")
+                        
+                        # Read request to check for output_path
+                        output_path_override = None
+                        try:
+                            with open(req_path, 'r') as f:
+                                req_data = json.load(f)
+                                config = req_data.get("config", {})
+                                output_path_override = config.get("output_path")
+                        except Exception as e:
+                            print(f"[Robot Daemon] Failed to parse request: {e}")
+
+                        # Simulate experiment duration
+                        time.sleep(2)
+                        
+                        # Create dummy spectrum file as artifact
+                        spectrum_path = op_dir / "spectrum.csv"
+                        spectrum_path.write_text("wavelength,intensity\n400,0.1\n500,0.8\n600,0.2")
+                        
+                        # Generate data
+                        exp_data_content = {
+                            "conductivity_exp": 55.0, # Dummy match for simulation
+                            "stability_exp": 0.85
+                        }
+                        
+                        # Write result manifest
+                        result = {
+                            "status": "COMPLETED",
+                            "data": {"yield": 0.95, "purity": 0.99},
+                            "files": ["spectrum.csv"]
+                        }
+                        
+                        # If specific output path requested, write data there
+                        # This mimics the robot system pushing data to a shared location
+                        if output_path_override:
+                            # Resolve path relative to run root.
+                            # Daemon has run_root in scope? Yes, passed as arg.
+                            dest_path = run_root / output_path_override
+                            try:
+                                with open(dest_path, "w") as f:
+                                    json.dump(exp_data_content, f)
+                                print(f"[Robot Daemon] Wrote specific output to {dest_path}")
+                            except Exception as e:
+                                print(f"[Robot Daemon] Failed to write output path: {e}")
+
+                        with open(op_dir / "experiment_result.json", "w") as f:
+                            json.dump(result, f)
+                            
+                        print(f"[Robot Daemon] Completed experiment. Result written.")
+                        processed_uuids.add(op_dir.name)
         
-        # Task 1: Simulation
-        # Generates sim_results.json
-        sim_task = Task(
-            task_id="sim_task",
-            image="python:3.9",
-            command="python3 scripts/sim_predict.py",
-            # We map scripts so they are available
-            env={"PYTHONPATH": os.getcwd()}
-        )
-        wf.add_task(sim_task)
+        time.sleep(1)
+
+class ThinFilmCampaign(Campaign):
+    def plan(self, state: Optional[Dict[str, Any]] = None) -> Optional[Workflow]:
+        iteration = 0
+        if state:
+            iteration = state.get("iteration", 0)
         
-        # Task 2: Robot Handoff
-        # Uses ExternalTaskWrapper logic via scripts/handoff.py
-        # We depend on sim_task to produce sim_results.json
-        # NOTE: In a real system we would map file outputs explicitly.
-        # Here, tasks share the working directory in LocalBackend (simplified).
+        workflow = Workflow()
+        base_dir = Path(__file__).parent.absolute()
+        scripts_dir = base_dir / "scripts"
         
-        # However, LocalBackend creates separate directories for tasks by default?
-        # Let's check LocalBackend implementation... 
-        # Typically LocalBackend creates task_id folders.
-        # But for this demo, we might need shared storage or artifact passing.
+        # Iteration 0: Simulation
+        if iteration == 0:
+            print("Campaign: Planning Iteration 0 (Simulation)...")
+            sim_task = Task(
+                task_id="sim_predict",
+                image="python:3.9",
+                command=f"python3 {scripts_dir}/sim_predict.py",
+                env={"PYTHONPATH": os.getcwd()}
+            )
+            workflow.add_task(sim_task)
+            return workflow
+            
+        # Iteration 1: Robot Handoff (Experiment)
+        elif iteration == 1:
+            print("Campaign: Planning Iteration 1 (Robot Experiment)...")
+            
+            # Define where we want the robot to put the data
+            # Relative to run_root
+            robot_output = "robot_data.json"
+            
+            # This task uses ExperimentOperator via env var
+            robot_task = Task(
+                task_id="robot_execution",
+                image="python:3.9",
+                command="echo 'Dispatching to Robot'",
+                env={
+                    "MATTERSTACK_OPERATOR": "Experiment",
+                    "EXPERIMENT_CONFIG": json.dumps({
+                        "recipe": "A123",
+                        "temp": 300,
+                        "output_path": robot_output
+                    })
+                }
+            )
+            workflow.add_task(robot_task)
+            return workflow
+            
+        # Iteration 2: Reconcile Data
+        elif iteration == 2:
+            print("Campaign: Planning Iteration 2 (Reconcile)...")
+            
+            # Construct paths
+            # sim_predict output: ../sim_predict/sim_results.json
+            # robot output: ../robot_data.json
+            
+            sim_path = "../sim_predict/sim_results.json"
+            exp_path = "../robot_data.json"
+            
+            reconcile_task = Task(
+                task_id="reconcile_data",
+                image="python:3.9",
+                command=f"python3 {scripts_dir}/reconcile_data.py --sim {sim_path} --exp {exp_path}",
+                env={"PYTHONPATH": os.getcwd()}
+            )
+            workflow.add_task(reconcile_task)
+            return workflow
+            
+        return None
+
+    def analyze(self, current_state: Any, results: Dict[str, Any]) -> Any:
+        iteration = 0
+        if current_state:
+            iteration = current_state.get("iteration", 0)
+            
+        print(f"Campaign: Analyzing results from iteration {iteration}...")
         
-        # Assuming LocalBackend runs in a shared workspace root or we need to copy files?
-        # If tasks run in isolated dirs, T2 won't see T1's file.
-        # Let's assume for this "Mini-Project" that we run in a way that files are accessible 
-        # OR we rely on artifact passing which might be implicit in this simplified 'matterstack'.
+        # In a real campaign, we would read the results from the robot task here
+        # and update the state.
         
-        # Let's just assume simple execution where they can access the scripts directory.
-        # But T2 needs 'sim_results.json' from T1.
-        
-        # If we can't share files easily, we can chain them in one task? No, objective is workflow.
-        
-        # Workaround: For this demo, we assume we are running locally and can use relative paths 
-        # or that the backend is configured to share the workspace.
-        # Let's try to copy the artifact or just assume it works for the demo environment.
-        
-        # Actually, if we look at `test_external_task.py`, it uses `tmp_path` as workspace root.
-        
-        robot_task = Task(
-            task_id="robot_task",
-            image="python:3.9",
-            command="python3 scripts/handoff.py",
-            dependencies={sim_task.task_id},
-             env={"PYTHONPATH": os.getcwd()}
-        )
-        wf.add_task(robot_task)
-        
-        # Task 3: Reconcile
-        reconcile_task = Task(
-            task_id="reconcile_task",
-            image="python:3.9",
-            command="python3 scripts/reconcile_data.py",
-            dependencies={robot_task.task_id},
-             env={"PYTHONPATH": os.getcwd()}
-        )
-        wf.add_task(reconcile_task)
-        
-        # Run Workflow
-        # We use the current directory as the workspace root so files are shared/found easily?
-        # Actually, we should probably let the backend handle it.
-        # But if T2 needs T1's file, we need to ensure T2 runs in the same dir or copies it.
-        # The provided `matterstack` code doesn't show explicit artifact passing in `Task` definition visible here.
-        # We will assume a "shared filesystem" model for this demo where we can reference files.
-        # But `scripts/handoff.py` reads `sim_results.json`.
-        
-        # To make this robust:
-        # T1 writes to absolute path or shared path?
-        # Let's just run it and see. If it fails, we fix the file passing.
-        
-        backend = LocalBackend() # Uses default temporary workspace usually
-        # To make them share files, maybe we pass a specific workspace_root?
-        # backend = LocalBackend(workspace_root=os.getcwd()) # This would be messy but effective for sharing.
-        
-        # Better: run in the current directory (workspaces/thin_film_lab)
-        # We will initialize LocalBackend with the current dir.
-        
-        cwd = os.getcwd()
-        print(f"Running in {cwd}")
-        
-        # Note: LocalBackend might clean up? Let's hope not or use existing dir.
-        project_root = Path(__file__).resolve().parent.parent.parent
-        backend = LocalBackend(workspace_root=Path(base_dir) / "results")
-        
-        # We also need to make sure the SCRIPTS are available in the run_workspace.
-        # We can copy them or just reference them via absolute path in the command?
-        # commands are `python3 scripts/sim_predict.py`. 
-        # We need `scripts` folder inside `run_workspace` or `scripts` to be absolute.
-        
-        # Let's make commands use absolute paths to scripts to be safe.
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        scripts_dir = os.path.join(base_dir, "scripts")
-        
-        sim_task.command = f"python3 {os.path.join(scripts_dir, 'sim_predict.py')}"
-        robot_task.command = f"python3 {os.path.join(scripts_dir, 'handoff.py')}"
-        reconcile_task.command = f"python3 {os.path.join(scripts_dir, 'reconcile_data.py')}"
-        
-        # Also, T1 needs to output to a place T2 can find.
-        # By default they output to CWD (which is inside their task dir in LocalBackend).
-        # We need them to share a data dir.
-        # Let's pass a SHARED_DIR env var and have scripts use it?
-        # Or simpler: have them write to the backend's root?
-        
-        # For this demo, let's try relying on the fact that we can write to a shared absolute path?
-        # Or... let's modify the scripts to take output/input paths arguments?
-        # That's best practice but I already wrote the scripts to use CWD.
-        
-        # Quick fix: Symlink `sim_results.json` from T1 to T2? 
-        # No, that requires orchestration.
-        
-        # Let's use a shared folder for data exchange for this demo.
-        data_dir = os.path.join(base_dir, "data_exchange")
-        os.makedirs(data_dir, exist_ok=True)
-        
-        # Update commands to change dir to data_dir?
-        # Or better, just run everything inside data_dir?
-        # LocalBackend runs tasks in separate dirs.
-        # We will use "cd {data_dir} && ..." for commands.
-        
-        cmd_prefix = f"cd {data_dir} &&"
-        sim_task.command = f"{cmd_prefix} python3 {os.path.join(scripts_dir, 'sim_predict.py')}"
-        robot_task.command = f"{cmd_prefix} python3 {os.path.join(scripts_dir, 'handoff.py')}"
-        reconcile_task.command = f"{cmd_prefix} python3 {os.path.join(scripts_dir, 'reconcile_data.py')}"
-        
-        # Also need to make sure `matterstack` is importable.
-        # PYTHONPATH is set to os.getcwd() (project root) in env.
-        
-        result = run_workflow(wf, backend=backend)
-        
-        print("\nWorkflow Finished!")
-        print(f"Status: {result.status}")
-        
-    finally:
-        print("Stopping Robot Daemon...")
-        robot_proc.terminate()
-        robot_proc.wait()
+        new_state = {"iteration": iteration + 1}
+        return new_state
+
+def get_campaign():
+    return ThinFilmCampaign()
 
 if __name__ == "__main__":
-    main()
+    print("Initializing Run...")
+    handle = initialize_run("thin_film_lab", get_campaign())
+    
+    # Create config.json to enforce actual execution via LocalBackend
+    config_path = handle.root_path / "config.json"
+    with open(config_path, "w") as f:
+        json.dump({"execution_mode": "HPC"}, f)
+
+    # Start Robot Daemon
+    t = threading.Thread(target=simulate_robot_daemon, args=(handle.root_path,), daemon=True)
+    t.start()
+    
+    print(f"Starting Loop for Run {handle.run_id}")
+    run_until_completion(handle, get_campaign())

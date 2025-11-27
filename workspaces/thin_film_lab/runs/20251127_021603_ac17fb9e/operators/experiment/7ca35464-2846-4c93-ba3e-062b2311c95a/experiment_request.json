@@ -1,0 +1,14 @@
+{
+  "task_id": "robot_execution",
+  "parameters": {
+    "MATTERSTACK_OPERATOR": "Experiment",
+    "EXPERIMENT_CONFIG": "{\"recipe\": \"A123\", \"temp\": 300, \"output_path\": \"robot_data.json\"}"
+  },
+  "files": [],
+  "config": {
+    "recipe": "A123",
+    "temp": 300,
+    "output_path": "robot_data.json"
+  },
+  "config_raw": null
+}

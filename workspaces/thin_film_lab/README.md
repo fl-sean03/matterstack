@@ -2,7 +2,7 @@
 
 **Orchestrating Asynchronous Handshakes Between Simulation and Robotic Synthesis**
 
-> **Disclaimer:** This project uses entirely simulated data. The "robotic synthesis" is performed by a mock script (`mock_robot.py`) that introduces random noise to the predicted values. No physical hardware is controlled.
+> **Disclaimer:** This project uses entirely simulated data. The "robotic synthesis" is performed by a mock daemon thread embedded in `main.py` that introduces random noise to the predicted values. No physical hardware is controlled.
 
 ## 1. Abstract
 This workspace demonstrates a "Self-Driving Lab" architecture where digital simulations and physical experiments are coupled in a closed loop. The workflow manages the complex handoff between a computational prediction task and an external robotic agent. It simulates the "Sim-to-Real" gap—calculating the discrepancy between theoretical predictions and experimental realities to calibrate future models.
@@ -19,9 +19,10 @@ Standard workflow engines assume all tasks are computational processes they cont
 - **Reliability**: The system must handle the waiting state without consuming active compute resources (polling or event-based).
 
 ## 4. MatterStack Solution
-This project uses the **`ExternalTask`** capability to bridge the digital-physical divide.
-- **Request/Response Pattern**: The workflow writes a structured `experiment_request.json` file to a shared "watch folder".
-- **Asynchronous Waiting**: The `robot_task` enters a holding pattern, monitoring for the appearance of a corresponding `experiment_results.json`.
+This project uses the **`ExperimentOperator`** capability to bridge the digital-physical divide.
+- **Operator Pattern**: The `ExperimentOperator` manages the interaction with external lab equipment.
+- **Structured Handoff**: The workflow creates a dedicated directory `runs/<run_id>/operators/experiment/<uuid>/` containing `experiment_request.json`.
+- **Asynchronous Waiting**: The `robot_task` enters a `WAITING_EXTERNAL` state. A background daemon (simulating the robot) watches this directory, performs the "experiment", and writes `experiment_result.json`.
 - **Decoupling**: The simulation logic is completely decoupled from the robot's control software, interacting only through standardized data contracts.
 
 ## 5. Workflow Architecture
@@ -36,7 +37,7 @@ The `main.py` script orchestrates a three-stage pipeline:
     - **Waits**: The workflow yields while a separate daemon (`mock_robot.py`) processes the request.
     - The `mock_robot.py` (simulating the hardware) reads the request, waits 2 seconds, and writes `experiment_results.json` with a random noise factor added.
 3.  **Data Reconciliation (`reconcile_task`)**:
-    - Reads both `sim_results.json` and `experiment_results.json`.
+    - Reads both `sim_results.json` and `robot_data.json` (which the daemon writes to the run root for easy access).
     - Calculates the error $|P_{sim} - P_{exp}|$.
     - Generates a final report on the model's accuracy.
 
@@ -44,19 +45,18 @@ The `main.py` script orchestrates a three-stage pipeline:
 
 ### Running the Lab Loop
 ```bash
-python main.py
+python3 main.py
 ```
-*Note: The script automatically launches the `mock_robot.py` daemon in the background to service the request.*
+*Note: The script automatically launches the robot simulator thread in the background to service the request.*
 
 ### Expected Output
 ```text
-=== Thin Film Lab Workflow ===
-Starting Robot Daemon...
-Running in /workspaces/thin_film_lab
+Initializing Run...
+[Robot Daemon] Watching workspaces/thin_film_lab/runs/.../operators/experiment...
 ...
-[Robot Daemon] Received request for recipe: {"temperature": 450, ...}
-[Robot Daemon] Synthesizing... (2s)
-[Robot Daemon] Experiment Complete. Result written.
+[Robot Daemon] Processing request in: ...
+[Robot Daemon] Wrote specific output to .../robot_data.json
+[Robot Daemon] Completed experiment. Result written.
 ...
 Workflow Finished!
 Status: COMPLETED

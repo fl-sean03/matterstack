@@ -8,8 +8,7 @@ import os
 import yaml
 
 from matterstack.core.backend import ComputeBackend
-from matterstack.runtime.backends.local import LocalBackend
-from matterstack.runtime.backends.hpc.backend import SlurmBackend
+# Moved imports to create_backend to avoid circular dependencies
 from matterstack.runtime.backends.hpc.ssh import SSHConfig
 
 
@@ -58,6 +57,7 @@ class ExecutionProfile:
         """
 
         if self.type == "local":
+            from matterstack.runtime.backends.local import LocalBackend
             if self.local is None:
                 raise ValueError("Local profile data must be provided for type 'local'.")
             return LocalBackend(
@@ -66,6 +66,7 @@ class ExecutionProfile:
             )
 
         if self.type == "slurm":
+            from matterstack.runtime.backends.hpc.backend import SlurmBackend
             if self.slurm is None:
                 raise ValueError("Slurm profile data must be provided for type 'slurm'.")
             return SlurmBackend(

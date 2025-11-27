@@ -19,21 +19,22 @@ Automating a workflow that includes a human pause is non-trivial.
 - **Dynamic Branching**: The subsequent workflow structure depends on how many and which candidates were approved.
 
 ## 4. MatterStack Solution
-This project utilizes the **`GateTask`** primitive.
-- **Blocking Execution**: The `GateTask` halts the DAG execution at a specific node.
-- **File-Based Trigger**: It monitors a specific directory for a "signal file" (`approved.txt` or `rejected.txt`).
-- **Seamless Resume**: Once the signal is detected, the workflow automatically resumes, triggering the dependent downstream tasks.
+This project utilizes the **`HumanOperator`** capability.
+- **Blocking Execution**: The workflow pauses at the `human_approval` task, which is dispatched to the `HumanOperator`.
+- **Task Directory**: The system creates a dedicated directory `runs/<run_id>/operators/human/<uuid>/`.
+- **Mechanism**: The operator waits for a `response.json` file to appear in this directory (simulating a UI or manual entry).
+- **Seamless Resume**: Once the response is detected, the workflow automatically resumes, triggering the dependent downstream tasks.
 
 ## 5. Workflow Architecture
 The pipeline defined in `main.py` consists of four stages:
 
 1.  **Candidate Proposal (`propose_candidates`)**:
     - Parses a high-level intent (e.g., "Find Cu-based catalysts") and generates a list of potential structures.
-    - Output: `candidates.csv`.
+    - Output: `candidates.csv` (saved in the task's output directory).
 2.  **Human Gate (`human_approval`)**:
-    - A `GateTask` that pauses execution.
+    - A `Task` configured with `MATTERSTACK_OPERATOR="Human"`.
     - **Instruction**: "Please review candidates.csv and approve."
-    - **Mechanism**: The system waits for the creation of `gate/approved.txt`.
+    - **Simulation**: A background thread monitors the operator directory and automatically writes `response.json` after a delay.
 3.  **Fan-Out Simulations (`calc_ads_N`)**:
     - *Only* after the gate opens, the workflow launches parallel adsorption energy calculations (`calc_adsorption.py`) for the approved candidates.
 4.  **Ranking (`rank_results`)**:
@@ -43,20 +44,20 @@ The pipeline defined in `main.py` consists of four stages:
 
 ### Running the Workflow
 ```bash
-python main.py
+python3 main.py
 ```
-*Note: For demonstration purposes, a background thread simulates the human expert by automatically creating the approval file after a 5-second delay.*
+*Note: For demonstration purposes, a background thread simulates the human expert by automatically creating the approval response after a delay.*
 
 ### Expected Output
 ```text
-[Human Simulator] Waiting 5s before approving...
-Starting Workflow...
+Initializing Run...
+[Human Simulator] Watching workspaces/catalyst_human_in_loop/runs/.../operators/human...
 ...
-Task 'human_approval' status: RUNNING (Waiting for gate...)
+[Human Simulator] Found task: ...
+[Human Simulator] Approved task in .../response.json
 ...
-[Human Simulator] Created .../gate/approved.txt. Gate should open now.
-...
-Task 'human_approval' status: COMPLETED
+Task human_approval completed (found response.json).
+External Run human_approval transitioned to ExternalRunStatus.COMPLETED
 Task 'calc_ads_0' status: RUNNING
 ...
 Workflow Completed.

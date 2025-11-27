@@ -43,7 +43,8 @@ The logic is encapsulated in `main.py` within the `CoatingsCampaign` class:
 ## 6. Execution & Results
 
 ### Running the Campaign
-Execute the campaign driver:
+The workspace is self-contained. Run the `main.py` script to execute the full active learning loop.
+
 ```bash
 python3 main.py
 ```

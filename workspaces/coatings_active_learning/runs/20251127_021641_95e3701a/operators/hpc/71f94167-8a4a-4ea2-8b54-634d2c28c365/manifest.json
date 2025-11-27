@@ -1,0 +1,17 @@
+{
+  "image": "python:3.9",
+  "command": "python3 sim_friction.py input.json -o friction_results.json",
+  "files": {
+    "sim_friction.py": "import argparse\nimport json\nimport random\nimport sys\n\ndef main():\n    parser = argparse.ArgumentParser(description=\"Simulate friction.\")\n    parser.add_argument(\"input_file\", help=\"Path to input JSON file\")\n    parser.add_argument(\"--output\", \"-o\", default=\"response.json\", help=\"Path to output JSON file\")\n    args = parser.parse_args()\n\n    try:\n        with open(args.input_file, 'r') as f:\n            data = json.load(f)\n    except FileNotFoundError:\n        print(f\"Error: File {args.input_file} not found\")\n        sys.exit(1)\n        \n    candidate_id = data.get('candidate_id', 'unknown')\n    # Use candidate_id to seed random for deterministic \"simulation\"\n    random.seed(str(candidate_id) + \"_friction\")\n    \n    # Simulate friction coefficient between 0.01 and 0.5\n    friction = random.uniform(0.01, 0.5)\n    \n    result = {\n        \"candidate_id\": candidate_id,\n        \"friction_coefficient\": friction,\n        \"status\": \"success\"\n    }\n    \n    with open(args.output, \"w\") as f:\n        json.dump(result, f, indent=2)\n\nif __name__ == \"__main__\":\n    main()",
+    "input.json": "{\"candidate_id\": \"cand_0007\", \"params\": [0.8111354679592422, 0.45983606455108406, 0.3848526778311304, 0.17767691415618547, 0.12312231407079333]}"
+  },
+  "env": {},
+  "dependencies": [],
+  "task_id": "cand_0007_friction",
+  "cores": 1,
+  "memory_gb": 1,
+  "gpus": 0,
+  "time_limit_minutes": 60,
+  "allow_dependency_failure": false,
+  "allow_failure": false
+}

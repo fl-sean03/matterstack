@@ -37,22 +37,22 @@ class WorkflowResult:
 
     @property
     def failed_tasks(self) -> Dict[str, TaskResult]:
-        """Subset of tasks that ended in JobState.FAILED."""
+        """Subset of tasks that ended in JobState.COMPLETED_ERROR."""
 
         return {
             task_id: result
             for task_id, result in self.tasks.items()
-            if result.status.state == JobState.FAILED
+            if result.status.state == JobState.COMPLETED_ERROR
         }
 
     @property
     def succeeded_tasks(self) -> Dict[str, TaskResult]:
-        """Subset of tasks that ended in JobState.COMPLETED."""
+        """Subset of tasks that ended in JobState.COMPLETED_OK."""
 
         return {
             task_id: result
             for task_id, result in self.tasks.items()
-            if result.status.state == JobState.COMPLETED
+            if result.status.state == JobState.COMPLETED_OK
         }
 
     @property
@@ -64,20 +64,17 @@ class WorkflowResult:
 
         states = {result.status.state for result in self.tasks.values()}
 
-        if JobState.FAILED in states:
-            # If some tasks succeeded but others failed, it's a partial success
-            # (assuming the workflow wasn't aborted immediately, which this check implies)
-            if JobState.COMPLETED in states:
-                return JobState.PARTIAL_SUCCESS
-            return JobState.FAILED
+        if JobState.COMPLETED_ERROR in states:
+            # If some tasks succeeded but others failed, it's still an error state for the whole workflow
+            return JobState.COMPLETED_ERROR
             
         if JobState.CANCELLED in states:
             return JobState.CANCELLED
-        if states == {JobState.COMPLETED}:
-            return JobState.COMPLETED
+        if states == {JobState.COMPLETED_OK}:
+            return JobState.COMPLETED_OK
         if JobState.RUNNING in states:
             return JobState.RUNNING
-        if JobState.PENDING in states:
-            return JobState.PENDING
+        if JobState.QUEUED in states:
+            return JobState.QUEUED
 
         return JobState.UNKNOWN

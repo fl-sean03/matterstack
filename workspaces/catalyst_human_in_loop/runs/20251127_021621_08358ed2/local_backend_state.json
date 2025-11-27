@@ -1,0 +1,32 @@
+{
+  "propose_candidates": {
+    "job_id": "propose_candidates",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "calc_ads_0": {
+    "job_id": "calc_ads_0",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "calc_ads_1": {
+    "job_id": "calc_ads_1",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "calc_ads_2": {
+    "job_id": "calc_ads_2",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  },
+  "rank_results": {
+    "job_id": "rank_results",
+    "state": "COMPLETED_OK",
+    "exit_code": 0,
+    "reason": null
+  }
+}

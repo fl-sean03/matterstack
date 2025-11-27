@@ -1,0 +1,21 @@
+{
+  "candidate_id": "cand_7640",
+  "sim_data": {
+    "conductivity_sim": 54.35011706200466,
+    "stability_sim": 0.26514987098992204,
+    "composition": {
+      "A": 0.55,
+      "B": 0.84
+    },
+    "candidate_id": "cand_7640"
+  },
+  "exp_data": {
+    "conductivity_exp": 55.0,
+    "stability_exp": 0.85
+  },
+  "metrics": {
+    "conductivity_error_rel": 0.011816053418097154,
+    "stability_error_rel": 0.688058975305974,
+    "overall_drift": 0.3499375143620356
+  }
+}

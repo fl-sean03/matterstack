@@ -27,10 +27,10 @@ This project leverages **Soft Failure Handling** features in MatterStack to buil
 ## 5. Workflow Architecture
 The pipeline defined in `main.py` follows a "Fan-Out / Fan-In" pattern:
 
-1.  **Candidate Generation**: The script generates 100 candidate structures with random dopants (Al, Si, Ti, Mg) and concentrations.
+1.  **Candidate Generation**: The script generates 10 candidate structures (scaled down for the demo) with random dopants (Al, Si, Ti, Mg) and concentrations.
 2.  **Parallel Execution (Fan-Out)**:
-    - 100 parallel `calc_properties.py` tasks are launched.
-    - **Simulated Failure**: To mimic real-world HPC instability, each task has a ~10% probability of raising a purely stochastic exception (exit code 1).
+    - 10 parallel `calc_properties.py` tasks are launched.
+    - **Simulated Failure**: To mimic real-world HPC instability, each task has a probability of raising a purely stochastic exception (exit code 1).
 3.  **Aggregation (Fan-In)**:
     - A single `train_model.py` task runs after the fan-out phase.
     - It iterates through the results directory, parsing only the valid `results.json` files.
@@ -44,13 +44,13 @@ python3 main.py
 ```
 
 ### Expected Behavior
-You will observe a stream of task executions. Approximately 10% of the candidate tasks will report `FAILED`.
+You will observe a stream of task executions. Approximately 10% of the candidate tasks will report `FAILED` (simulated stochastic failure).
+
 ```text
 ...
-Task cand_042 FAILED (Simulated stochastic failure)
-Task cand_043 COMPLETED
+Task cand_006 status changed: ExternalRunStatus.SUBMITTED -> ExternalRunStatus.FAILED
+External Run cand_006 transitioned to ExternalRunStatus.FAILED
 ...
-Workflow finished with status: PARTIAL_SUCCESS
 ```
 
 Despite the errors, the Aggregator will successfully run:
@@ -58,7 +58,7 @@ Despite the errors, the Aggregator will successfully run:
 Aggregator completed successfully.
 Check model_card.md in the aggregator directory.
 --- Model Card ---
-Model trained on 89/100 successful candidates.
+Model trained on 7/10 successful candidates.
 ...
 ```
 This demonstrates that the scientific insight (the trained model) was preserved despite the imperfections of the underlying infrastructure.

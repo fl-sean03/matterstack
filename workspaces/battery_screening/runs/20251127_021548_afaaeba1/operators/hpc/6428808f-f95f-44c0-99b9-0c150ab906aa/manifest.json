@@ -1,0 +1,14 @@
+{
+  "image": "python:3.9",
+  "command": "python3 /home/sf2/LabWork/Workspace/27-PMOS/2-PMS/workspaces/battery_screening/scripts/calc_properties.py --candidate_id cand_002 --doping_level 0.031 --dopant Al",
+  "files": {},
+  "env": {},
+  "dependencies": [],
+  "task_id": "cand_002",
+  "cores": 1,
+  "memory_gb": 1,
+  "gpus": 0,
+  "time_limit_minutes": 60,
+  "allow_dependency_failure": false,
+  "allow_failure": true
+}

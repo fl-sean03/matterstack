@@ -1,6 +1,0 @@
-from examples.ht_coatings_aa7075_marine.src.campaign import campaign_state
-
-def test_example_campaign_runs():
-    campaign_state.run_grid_single_tier()
-    assert campaign_state.done()
-    assert len(campaign_state.best_candidates(top_k=3)) > 0

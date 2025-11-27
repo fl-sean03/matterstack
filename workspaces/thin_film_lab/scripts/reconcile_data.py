@@ -1,16 +1,22 @@
 import json
 import sys
+import argparse
 
 def main():
     """
     Reads sim_results.json and experiment_results.json, reconciles them.
     Output: final_report.json
     """
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sim", required=True, help="Path to simulation results")
+    parser.add_argument("--exp", required=True, help="Path to experiment results")
+    args = parser.parse_args()
+
     try:
-        with open("sim_results.json", 'r') as f:
+        with open(args.sim, 'r') as f:
             sim_data = json.load(f)
             
-        with open("experiment_results.json", 'r') as f:
+        with open(args.exp, 'r') as f:
             exp_data = json.load(f)
             
         # Calculate Error

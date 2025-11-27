@@ -1,11 +1,11 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Any, Union
+from typing import Dict, List, Set, Union
 from pathlib import Path
 import uuid
 
-@dataclass
-class Task:
+from pydantic import BaseModel, Field
+
+class Task(BaseModel):
     """
     A declarative unit of work to be executed by a Backend.
 
@@ -25,10 +25,10 @@ class Task:
     """
     image: str
     command: str
-    files: Dict[str, Union[str, Path]] = field(default_factory=dict)
-    env: Dict[str, str] = field(default_factory=dict)
-    dependencies: Set[str] = field(default_factory=set)
-    task_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    files: Dict[str, Union[str, Path]] = Field(default_factory=dict)
+    env: Dict[str, str] = Field(default_factory=dict)
+    dependencies: Set[str] = Field(default_factory=set)
+    task_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     
     # Resource requirements
     cores: int = 1
@@ -38,16 +38,16 @@ class Task:
     
     # Execution behavior
     allow_dependency_failure: bool = False
+    allow_failure: bool = False
 
-@dataclass
-class Workflow:
+class Workflow(BaseModel):
     """
     A Directed Acyclic Graph (DAG) of Tasks.
     
     Manages dependencies and execution order for a collection of Tasks.
     Ensures no circular dependencies exist.
     """
-    tasks: Dict[str, Task] = field(default_factory=dict)
+    tasks: Dict[str, Task] = Field(default_factory=dict)
     
     def add_task(self, task: Task):
         """Add a task to the workflow."""
