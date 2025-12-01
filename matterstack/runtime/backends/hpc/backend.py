@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict, Optional, Any, List
+import fnmatch
+
 from ....core.backend import ComputeBackend, JobStatus, JobState
 from ....core.workflow import Task
 from .ssh import SSHClient, SSHConfig
@@ -23,11 +25,29 @@ class SlurmBackend(ComputeBackend):
             self._client = await SSHClient.connect(self.ssh_config)
         return self._client
 
-    async def submit(self, task: Task) -> str:
+    async def _execute_with_retry(self, func, *args, **kwargs):
+        """Execute a backend function with auto-reconnection on failure."""
+        try:
+            return await func(*args, **kwargs)
+        except RuntimeError as e:
+            if "SSH connection lost" in str(e) or "Socket is closed" in str(e) or "not connected" in str(e):
+                # Reset client and retry once
+                await self.close()
+                return await func(*args, **kwargs)
+            raise e
+
+    async def submit(self, task: Task, workdir_override: Optional[str] = None) -> str:
+        return await self._execute_with_retry(self._submit_impl, task, workdir_override)
+
+    async def _submit_impl(self, task: Task, workdir_override: Optional[str] = None) -> str:
         client = await self._get_client()
         
         # 1. Prepare workspace
-        task_dir = f"{self.workspace_root}/{task.task_id}"
+        if workdir_override:
+            task_dir = workdir_override
+        else:
+            task_dir = f"{self.workspace_root}/{task.task_id}"
+            
         await client.mkdir_p(task_dir)
 
         # 2. Upload files
@@ -87,19 +107,39 @@ class SlurmBackend(ComputeBackend):
         if task.image:
              lines.append(f"# Image: {task.image} (Logic to be implemented)")
              
+        # Ensure python is run from the active conda environment
+        # If task.command starts with "python", we might want to ensure it uses the env python
+        # But generally, if conda is activated, 'python' in PATH should be correct.
+        
+        # Add conda hook for shell activation if not present in modules
+        # This is a bit heuristic, but safer for CURC/anaconda usage
+        if any("anaconda" in m or "miniforge" in m for m in self.slurm_config.get("modules", [])):
+             lines.insert(-1, 'eval "$(conda shell.bash hook)"')
+             # Note: Activation should ideally happen in 'modules' config (e.g. 'conda activate base')
+             # But the hook is needed for 'conda activate' to work in script.
+        
         lines.append(task.command)
         
         return "\n".join(lines) + "\n"
 
     async def poll(self, job_id: str) -> JobStatus:
+        return await self._execute_with_retry(self._poll_impl, job_id)
+
+    async def _poll_impl(self, job_id: str) -> JobStatus:
         client = await self._get_client()
         return await get_job_status(client, job_id)
 
     async def cancel(self, job_id: str) -> None:
+        await self._execute_with_retry(self._cancel_impl, job_id)
+
+    async def _cancel_impl(self, job_id: str) -> None:
         client = await self._get_client()
         await client.run(f"scancel {job_id}")
 
     async def get_logs(self, job_id: str) -> Dict[str, str]:
+        return await self._execute_with_retry(self._get_logs_impl, job_id)
+
+    async def _get_logs_impl(self, job_id: str) -> Dict[str, str]:
         client = await self._get_client()
         
         paths = await get_job_io_paths(client, job_id)
@@ -135,25 +175,80 @@ class SlurmBackend(ComputeBackend):
 
         return logs
         
-    async def download(self, task_id: str, remote_path: str, local_path: str) -> None:
+    async def download(
+        self,
+        task_id: str,
+        remote_path: str,
+        local_path: str,
+        include_patterns: Optional[List[str]] = None,
+        exclude_patterns: Optional[List[str]] = None,
+        workdir_override: Optional[str] = None
+    ) -> None:
+        return await self._execute_with_retry(
+            self._download_impl,
+            task_id, remote_path, local_path, include_patterns, exclude_patterns, workdir_override
+        )
+
+    async def _download_impl(
+        self,
+        task_id: str,
+        remote_path: str,
+        local_path: str,
+        include_patterns: Optional[List[str]] = None,
+        exclude_patterns: Optional[List[str]] = None,
+        workdir_override: Optional[str] = None
+    ) -> None:
         """
         Download a file or directory from the task's workspace.
-        
-        Args:
-            task_id: The ID of the task/job.
-            remote_path: Relative path within the task directory (or absolute).
-                         Use "." to download the entire task workspace.
-            local_path: Destination path on the local machine.
         """
         client = await self._get_client()
         
+        # Resolve base task dir
+        if workdir_override:
+            task_dir = workdir_override
+        else:
+            task_dir = f"{self.workspace_root}/{task_id}"
+
         # Resolve full remote path
         if remote_path.startswith("/"):
             full_remote = remote_path
         else:
-            full_remote = f"{self.workspace_root}/{task_id}/{remote_path}"
+            if remote_path == ".":
+                full_remote = task_dir
+            else:
+                full_remote = f"{task_dir}/{remote_path}"
+        
+        # Define filter callback
+        def _should_download(path: str) -> bool:
+            # path is the absolute remote path of the file
+            # We need to match against the relative path from the download root (full_remote)
+            # This mimics rsync include/exclude logic relative to transfer root
             
-        await client.get(full_remote, local_path, recursive=True)
+            try:
+                rel_path = Path(path).relative_to(full_remote)
+                rel_path_str = str(rel_path)
+            except ValueError:
+                # Should not happen if SSHClient logic is correct
+                rel_path_str = Path(path).name
+            
+            should = True
+            
+            if include_patterns:
+                # If include patterns exist, defaults to exclude unless matched
+                # (Standard rsync behavior is complex, but here simplistic:
+                # if include_patterns provided, we require a match)
+                if not any(fnmatch.fnmatch(rel_path_str, p) for p in include_patterns):
+                    should = False
+            
+            if exclude_patterns:
+                if any(fnmatch.fnmatch(rel_path_str, p) for p in exclude_patterns):
+                    should = False
+            
+            return should
+
+        filter_cb = _should_download if (include_patterns or exclude_patterns) else None
+            
+        await client.get(full_remote, local_path, recursive=True, filter_callback=filter_cb)
 
     async def close(self):
         if self._client:

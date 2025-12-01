@@ -209,6 +209,7 @@ class SQLiteStateStore:
                     "time_limit_minutes": task.time_limit_minutes,
                     "allow_dependency_failure": task.allow_dependency_failure,
                     "allow_failure": task.allow_failure,
+                    "download_patterns": task.download_patterns,
                     "task_type": task.__class__.__name__
                 }
 
@@ -257,7 +258,8 @@ class SQLiteStateStore:
                     gpus=tm.gpus,
                     time_limit_minutes=tm.time_limit_minutes,
                     allow_dependency_failure=tm.allow_dependency_failure,
-                    allow_failure=tm.allow_failure
+                    allow_failure=tm.allow_failure,
+                    download_patterns=tm.download_patterns
                 )
                 tasks.append(task)
             return tasks

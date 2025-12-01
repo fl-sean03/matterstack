@@ -14,6 +14,7 @@ from matterstack.core.run import RunHandle
 from matterstack.core.campaign import Campaign
 from matterstack.core.workflow import Workflow, Task
 from matterstack.orchestration.diagnostics import get_run_frontier
+from matterstack.cli.tui import CampaignMonitor
 import tempfile
 import shutil
 
@@ -362,6 +363,40 @@ def cmd_explain(args):
         traceback.print_exc()
         sys.exit(1)
 
+def cmd_monitor(args):
+    """
+    Launch TUI monitor for a run.
+    """
+    run_id = args.run_id
+    
+    if run_id:
+        handle = find_run(run_id)
+        if not handle:
+            logger.error(f"Run {run_id} not found.")
+            sys.exit(1)
+    else:
+        # Find latest active run
+        active_runs = list_active_runs()
+        if active_runs:
+             # Sort by run_id (timestamp) desc
+             active_runs.sort(key=lambda h: h.run_id, reverse=True)
+             handle = active_runs[0]
+             logger.info(f"Auto-attaching to latest active run: {handle.run_id}")
+        else:
+             logger.error("No active runs found to monitor. Please specify a run ID.")
+             sys.exit(1)
+             
+    try:
+        monitor = CampaignMonitor(handle)
+        monitor.run()
+    except KeyboardInterrupt:
+        print("\nMonitor stopped.")
+    except Exception as e:
+        logger.error(f"Monitor crashed: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
 class SelfTestCampaign(Campaign):
     """Minimal campaign for self-test verification."""
     def plan(self, state: Optional[Any]) -> Optional[Workflow]:
@@ -489,6 +524,11 @@ def main():
     parser_explain = subparsers.add_parser("explain", help="Explain run status and blockers")
     parser_explain.add_argument("run_id", help="Run ID")
     parser_explain.set_defaults(func=cmd_explain)
+
+    # monitor
+    parser_monitor = subparsers.add_parser("monitor", help="Monitor a run with TUI")
+    parser_monitor.add_argument("run_id", nargs="?", help="Run ID (optional)")
+    parser_monitor.set_defaults(func=cmd_monitor)
 
     # self-test
     parser_self_test = subparsers.add_parser("self-test", help="Run a self-test of the installation")

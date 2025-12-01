@@ -65,6 +65,9 @@ class TaskModel(Base):
     allow_dependency_failure: Mapped[bool] = mapped_column(Boolean, default=False)
     allow_failure: Mapped[bool] = mapped_column(Boolean, default=False)
     
+    # Selective Download
+    download_patterns: Mapped[Optional[Dict[str, List[str]]]] = mapped_column(JSON, nullable=True)
+
     # Execution State
     # Note: We might want to track local execution status here if it differs from ExternalRunStatus
     # For now, we rely on ExternalRunModel for execution tracking of operators
