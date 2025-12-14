@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Optional, Any, List
 import fnmatch
+import shlex
 
 from ....core.backend import ComputeBackend, JobStatus, JobState
-from ....core.workflow import Task
+from ....core.workflow import Task, FileFromPath, FileFromContent
 from .ssh import SSHClient, SSHConfig
 from .slurm import submit_job, get_job_status, get_job_io_paths
 
@@ -36,10 +37,10 @@ class SlurmBackend(ComputeBackend):
                 return await func(*args, **kwargs)
             raise e
 
-    async def submit(self, task: Task, workdir_override: Optional[str] = None) -> str:
-        return await self._execute_with_retry(self._submit_impl, task, workdir_override)
+    async def submit(self, task: Task, workdir_override: Optional[str] = None, local_debug_dir: Optional[Path] = None) -> str:
+        return await self._execute_with_retry(self._submit_impl, task, workdir_override, local_debug_dir)
 
-    async def _submit_impl(self, task: Task, workdir_override: Optional[str] = None) -> str:
+    async def _submit_impl(self, task: Task, workdir_override: Optional[str] = None, local_debug_dir: Optional[Path] = None) -> str:
         client = await self._get_client()
         
         # 1. Prepare workspace
@@ -54,15 +55,41 @@ class SlurmBackend(ComputeBackend):
         for name, content_or_path in task.files.items():
             remote_path = f"{task_dir}/{name}"
             
-            if isinstance(content_or_path, Path):
-                # Upload file or directory recursively
+            if isinstance(content_or_path, FileFromPath):
+                # Explicit file from path
+                await client.put(str(content_or_path.source_path), remote_path, recursive=True)
+            elif isinstance(content_or_path, FileFromContent):
+                # Explicit content
+                await client.write_text(remote_path, content_or_path.content)
+            elif isinstance(content_or_path, Path):
+                # Legacy: Path object treated as source path
                 await client.put(str(content_or_path), remote_path, recursive=True)
+            elif isinstance(content_or_path, str):
+                # Legacy: heuristic check
+                # Check if it looks like a path AND exists
+                is_likely_path = len(content_or_path) > 0 and len(content_or_path) < 1024 and "\n" not in content_or_path
+                if is_likely_path and Path(content_or_path).exists():
+                     await client.put(content_or_path, remote_path, recursive=True)
+                else:
+                     # Treat as content
+                     await client.write_text(remote_path, content_or_path)
             else:
-                # Assume string content
-                await client.write_text(remote_path, str(content_or_path))
+                # Should not happen due to Pydantic validation, but good safety
+                raise ValueError(f"Unknown file type for {name}: {type(content_or_path)}")
 
         # 3. Create batch script
         batch_script = self._generate_batch_script(task, task_dir)
+        
+        # Save locally for debugging if requested
+        if local_debug_dir:
+            try:
+                local_debug_dir.mkdir(parents=True, exist_ok=True)
+                local_script_path = local_debug_dir / "submit.sh"
+                local_script_path.write_text(batch_script)
+            except Exception as e:
+                # Don't fail the run if local write fails, just log/warn
+                print(f"WARNING: Failed to save local debug script: {e}")
+
         script_path = f"{task_dir}/submit.sh"
         await client.write_text(script_path, batch_script)
         
@@ -73,20 +100,51 @@ class SlurmBackend(ComputeBackend):
     def _generate_batch_script(self, task: Task, task_dir: str) -> str:
         """Generate the Slurm batch script content."""
         lines = ["#!/bin/bash"]
+        
+        # Track which directives have been explicitly set by the Task
+        # so we don't override them with global defaults.
+        configured_directives = set()
+
+        # 1. Task-specific attributes (Higher Precedence)
         lines.append(f"#SBATCH --job-name={task.task_id}")
-        lines.append(f"#SBATCH --time={task.time_limit_minutes}")
-        lines.append(f"#SBATCH --cpus-per-task={task.cores}")
-        lines.append(f"#SBATCH --mem={task.memory_gb}G")
+        configured_directives.add("job-name")
+        
+        if task.time_limit_minutes is not None:
+            lines.append(f"#SBATCH --time={task.time_limit_minutes}")
+            configured_directives.add("time")
+        
+        if task.cores is not None:
+             lines.append(f"#SBATCH --cpus-per-task={task.cores}")
+             configured_directives.add("cpus-per-task")
+             
+        if task.memory_gb is not None:
+             lines.append(f"#SBATCH --mem={task.memory_gb}G")
+             configured_directives.add("mem")
+             
         lines.append(f"#SBATCH --output={task_dir}/stdout.log")
         lines.append(f"#SBATCH --error={task_dir}/stderr.log")
+        # output/error are usually always task-specific, but we track them anyway
+        configured_directives.add("output")
+        configured_directives.add("error")
         
-        if task.gpus > 0:
+        if task.gpus is not None and task.gpus > 0:
             lines.append(f"#SBATCH --gres=gpu:{task.gpus}")
+            configured_directives.add("gres")
         
-        # Add Slurm specific config
-        for key in ["account", "partition", "qos"]:
+        # 2. Global Defaults (Lower Precedence)
+        # Added "mem" and "gres" to the supported list
+        supported_keys = [
+            "account", "partition", "qos", "ntasks",
+            "cpus-per-task", "nodes", "time", "mem", "gres"
+        ]
+        
+        for key in supported_keys:
+            if key in configured_directives:
+                continue
+                
             if val := self.slurm_config.get(key):
                 lines.append(f"#SBATCH --{key}={val}")
+                configured_directives.add(key)
 
         lines.append("")
 
@@ -98,7 +156,7 @@ class SlurmBackend(ComputeBackend):
         
         # Export env vars
         for k, v in task.env.items():
-            lines.append(f"export {k}={v}")
+            lines.append(f"export {k}={shlex.quote(str(v))}")
         
         lines.append("")
         lines.append(f"cd {task_dir}")
@@ -118,9 +176,13 @@ class SlurmBackend(ComputeBackend):
              # Note: Activation should ideally happen in 'modules' config (e.g. 'conda activate base')
              # But the hook is needed for 'conda activate' to work in script.
         
+        lines.append('echo "Job started on $(hostname)"')
+        lines.append('echo "Python: $(which python3)"')
         lines.append(task.command)
         
-        return "\n".join(lines) + "\n"
+        script_content = "\n".join(lines) + "\n"
+        print(f"DEBUG: Generated Batch Script:\n{script_content}")
+        return script_content
 
     async def poll(self, job_id: str) -> JobStatus:
         return await self._execute_with_retry(self._poll_impl, job_id)
@@ -177,37 +239,46 @@ class SlurmBackend(ComputeBackend):
         
     async def download(
         self,
-        task_id: str,
+        job_id: str,
         remote_path: str,
         local_path: str,
         include_patterns: Optional[List[str]] = None,
         exclude_patterns: Optional[List[str]] = None,
-        workdir_override: Optional[str] = None
+        workdir_override: Optional[str] = None,
     ) -> None:
         return await self._execute_with_retry(
             self._download_impl,
-            task_id, remote_path, local_path, include_patterns, exclude_patterns, workdir_override
+            job_id,
+            remote_path,
+            local_path,
+            include_patterns,
+            exclude_patterns,
+            workdir_override,
         )
 
     async def _download_impl(
         self,
-        task_id: str,
+        job_id: str,
         remote_path: str,
         local_path: str,
         include_patterns: Optional[List[str]] = None,
         exclude_patterns: Optional[List[str]] = None,
-        workdir_override: Optional[str] = None
+        workdir_override: Optional[str] = None,
     ) -> None:
         """
-        Download a file or directory from the task's workspace.
+        Download a file or directory from the job's workspace.
+
+        Note: For the Slurm backend, `job_id` is historically the MatterStack task_id
+        used to construct the default remote workspace path when `workdir_override`
+        is not provided.
         """
         client = await self._get_client()
-        
+
         # Resolve base task dir
         if workdir_override:
             task_dir = workdir_override
         else:
-            task_dir = f"{self.workspace_root}/{task_id}"
+            task_dir = f"{self.workspace_root}/{job_id}"
 
         # Resolve full remote path
         if remote_path.startswith("/"):

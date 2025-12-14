@@ -43,10 +43,11 @@ def test_battery_science(tmp_path):
     campaign = load_campaign("battery_screening")
     handle = initialize_run("battery_screening", campaign, base_path=base_path)
     
-    # Configure for Local execution (actually running code)
+    # v0.2.5: "Local" execution_mode is simulated for non-operator tasks.
+    # Use "HPC" to run compute tasks locally via ComputeOperator + LocalBackend.
     config_path = handle.root_path / "config.json"
     with open(config_path, "w") as f:
-        json.dump({"execution_mode": "Local", "max_hpc_jobs_per_run": 2}, f)
+        json.dump({"execution_mode": "HPC", "max_hpc_jobs_per_run": 2}, f)
         
     status = run_loop_until_completion(handle, campaign)
     assert status == "COMPLETED"
@@ -75,6 +76,7 @@ def test_battery_science(tmp_path):
     assert "Average Formation Energy" in content
 
 
+@pytest.mark.skip(reason="Workspace 'thin_film_lab' is missing from repo")
 def test_thin_film_science(tmp_path):
     """
     Validates that Thin Film Lab produces a final report with drift metrics.
@@ -145,10 +147,11 @@ def test_catalyst_science(tmp_path):
     campaign = load_campaign("catalyst_human_in_loop")
     handle = initialize_run("catalyst_human_in_loop", campaign, base_path=base_path)
 
-    # Configure for Local execution
+    # v0.2.5: "Local" execution_mode is simulated for non-operator tasks.
+    # Use "HPC" to run compute tasks locally via ComputeOperator + LocalBackend.
     config_path = handle.root_path / "config.json"
     with open(config_path, "w") as f:
-        json.dump({"execution_mode": "Local"}, f)
+        json.dump({"execution_mode": "HPC"}, f)
     
     # Start human thread
     stop_event = threading.Event()
@@ -200,10 +203,11 @@ def test_coatings_science(tmp_path):
     campaign = load_campaign("coatings_active_learning")
     handle = initialize_run("coatings_active_learning", campaign, base_path=base_path)
     
-    # Configure for Local execution
+    # v0.2.5: "Local" execution_mode is simulated for non-operator tasks.
+    # Use "HPC" to run compute tasks locally via ComputeOperator + LocalBackend.
     config_path = handle.root_path / "config.json"
     with open(config_path, "w") as f:
-        json.dump({"execution_mode": "Local"}, f)
+        json.dump({"execution_mode": "HPC"}, f)
         
     status = run_loop_until_completion(handle, campaign, max_ticks=80) # Needs more ticks for 2 cycles
     assert status == "COMPLETED"

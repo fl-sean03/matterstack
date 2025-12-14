@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from typing import Optional
+import logging
 from ....core.backend import JobState, JobStatus
 from .ssh import SSHClient, CommandResult
+
+logger = logging.getLogger(__name__)
 
 def _parse_sacct_line(line: str) -> Optional[JobStatus]:
     """
@@ -119,22 +122,34 @@ async def get_job_status(ssh: SSHClient, job_id: str) -> JobStatus:
         f"sacct -j {job_id} --format=JobID,State,ExitCode,Start,End,Elapsed "
         "--parsable2 --noheader"
     )
+    # logger.debug(f"Running sacct: {sacct_cmd}")
     sacct_res: CommandResult = await ssh.run(sacct_cmd)
 
     if sacct_res.exit_status == 0:
+        if sacct_res.stdout.strip():
+            logger.info(f"sacct output for {job_id}: {sacct_res.stdout.strip()}")
+        else:
+            logger.info(f"sacct returned no output for {job_id}")
+
         for line in sacct_res.stdout.splitlines():
             line = line.strip()
             if not line:
                 continue
             status = _parse_sacct_line(line)
             if status:
+                logger.info(f"Parsed sacct status for {job_id}: {status}")
                 return status
+    else:
+        logger.warning(f"sacct failed exit code {sacct_res.exit_status}: {sacct_res.stderr}")
 
     # Fallback to squeue
     sq_cmd = f'squeue -j {job_id} -o "%i|%T|%M|%R" --noheader'
     squeue_res: CommandResult = await ssh.run(sq_cmd)
 
     if squeue_res.exit_status == 0:
+        if squeue_res.stdout.strip():
+            logger.info(f"squeue output for {job_id}: {squeue_res.stdout.strip()}")
+        
         for line in squeue_res.stdout.splitlines():
             line = line.strip()
             if not line:
@@ -145,14 +160,18 @@ async def get_job_status(ssh: SSHClient, job_id: str) -> JobStatus:
             jid, state_raw, elapsed_raw, reason = parts[:4]
             state = _normalize_state_from_squeue(state_raw)
             
+            logger.info(f"Parsed squeue status for {job_id}: {state}")
             return JobStatus(
                 job_id=jid,
                 state=state,
                 reason=reason or None,
                 exit_code=None
             )
+    else:
+        logger.warning(f"squeue failed exit code {squeue_res.exit_status}: {squeue_res.stderr}")
 
     # If both sacct and squeue fail, return LOST state
+    logger.warning(f"Job {job_id} not found in sacct or squeue (LOST)")
     return JobStatus(
         job_id=job_id,
         state=JobState.LOST,

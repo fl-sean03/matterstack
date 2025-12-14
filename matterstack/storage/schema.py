@@ -1,32 +1,49 @@
 from __future__ import annotations
+
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from sqlalchemy import String, Integer, DateTime, Boolean, JSON, ForeignKey, Text
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
 
 class Base(DeclarativeBase):
     pass
+
 
 class SchemaInfo(Base):
     """
     Tracks the database schema version.
     """
+
     __tablename__ = "schema_info"
 
-    key: Mapped[str] = mapped_column(String, primary_key=True) # e.g. "version"
-    value: Mapped[str] = mapped_column(String, nullable=False) # e.g. "1"
+    key: Mapped[str] = mapped_column(String, primary_key=True)  # e.g. "version"
+    value: Mapped[str] = mapped_column(String, nullable=False)  # e.g. "1"
+
 
 class RunModel(Base):
     """
     SQLAlchemy model for Run state.
     Combines RunHandle and RunMetadata information.
     """
+
     __tablename__ = "runs"
 
     # Identity
     run_id: Mapped[str] = mapped_column(String, primary_key=True)
     workspace_slug: Mapped[str] = mapped_column(String, nullable=False)
-    root_path: Mapped[str] = mapped_column(String, nullable=False) # Store as string
+    root_path: Mapped[str] = mapped_column(String, nullable=False)  # Store as string
 
     # Metadata
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
@@ -36,13 +53,22 @@ class RunModel(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Relationships
-    tasks: Mapped[List["TaskModel"]] = relationship(back_populates="run", cascade="all, delete-orphan")
-    external_runs: Mapped[List["ExternalRunModel"]] = relationship(back_populates="run", cascade="all, delete-orphan")
+    tasks: Mapped[List["TaskModel"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+    external_runs: Mapped[List["ExternalRunModel"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+    task_attempts: Mapped[List["TaskAttemptModel"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+
 
 class TaskModel(Base):
     """
     SQLAlchemy model for a Task within a Workflow.
     """
+
     __tablename__ = "tasks"
 
     task_id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -53,20 +79,24 @@ class TaskModel(Base):
     command: Mapped[str] = mapped_column(Text, nullable=False)
     files: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
     env: Mapped[Dict[str, str]] = mapped_column(JSON, default=dict)
-    dependencies: Mapped[List[str]] = mapped_column(JSON, default=list) # Store set as list
-    
+    dependencies: Mapped[List[str]] = mapped_column(JSON, default=list)  # Store set as list
+
     # Resources
-    cores: Mapped[int] = mapped_column(Integer, default=1)
-    memory_gb: Mapped[int] = mapped_column(Integer, default=1)
-    gpus: Mapped[int] = mapped_column(Integer, default=0)
-    time_limit_minutes: Mapped[int] = mapped_column(Integer, default=60)
-    
+    cores: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
+    memory_gb: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
+    gpus: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
+    time_limit_minutes: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True, default=None
+    )
+
     # Behavior
     allow_dependency_failure: Mapped[bool] = mapped_column(Boolean, default=False)
     allow_failure: Mapped[bool] = mapped_column(Boolean, default=False)
-    
+
     # Selective Download
-    download_patterns: Mapped[Optional[Dict[str, List[str]]]] = mapped_column(JSON, nullable=True)
+    download_patterns: Mapped[Optional[Dict[str, List[str]]]] = mapped_column(
+        JSON, nullable=True
+    )
 
     # Execution State
     # Note: We might want to track local execution status here if it differs from ExternalRunStatus
@@ -77,15 +107,66 @@ class TaskModel(Base):
     # Polymorphism
     task_type: Mapped[str] = mapped_column(String, default="Task")
 
+    # v2: convenience pointer to the current attempt (soft reference; may not have FK constraint
+    # in migrated DBs because SQLite ALTER TABLE cannot add FKs)
+    current_attempt_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     # Relationship
     run: Mapped["RunModel"] = relationship(back_populates="tasks")
-    external_run: Mapped[Optional["ExternalRunModel"]] = relationship(back_populates="task", uselist=False, cascade="all, delete-orphan")
+    external_run: Mapped[Optional["ExternalRunModel"]] = relationship(
+        back_populates="task", uselist=False, cascade="all, delete-orphan"
+    )
+    attempts: Mapped[List["TaskAttemptModel"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan"
+    )
+
+
+class TaskAttemptModel(Base):
+    """
+    SQLAlchemy model for a Task Attempt (schema v2).
+
+    This is a 1:N execution history for a logical task, enabling provenance-safe reruns.
+    """
+
+    __tablename__ = "task_attempts"
+    __table_args__ = (
+        UniqueConstraint("task_id", "attempt_index", name="uq_task_attempts_task_index"),
+        Index("ix_task_attempts_run_id_status", "run_id", "status"),
+    )
+
+    attempt_id: Mapped[str] = mapped_column(String, primary_key=True)
+
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.task_id"), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.run_id"), nullable=False, index=True)
+
+    attempt_index: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    status: Mapped[str] = mapped_column(String, nullable=False)
+
+    operator_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    operator_data: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
+    relative_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    status_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Relationships
+    run: Mapped["RunModel"] = relationship(back_populates="task_attempts")
+    task: Mapped["TaskModel"] = relationship(back_populates="attempts")
+
 
 class ExternalRunModel(Base):
     """
-    SQLAlchemy model for ExternalRunHandle.
+    SQLAlchemy model for ExternalRunHandle (schema v1).
     Tracks execution status of a Task on an Operator.
+
+    NOTE: In schema v2, this table is retained for backward compatibility / migration.
     """
+
     __tablename__ = "external_runs"
 
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.task_id"), primary_key=True)

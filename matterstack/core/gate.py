@@ -35,7 +35,7 @@ class GateTask(Task):
             "reject_file": self.reject_file,
             "info_file": self.info_file,
             "poll_interval": self.poll_interval,
-            "timeout_minutes": self.time_limit_minutes
+            "timeout_minutes": self.time_limit_minutes if self.time_limit_minutes is not None else 60
         }
         
         config_json = json.dumps(config)
@@ -56,7 +56,8 @@ class GateTaskWrapper:
         self.reject_path = Path(config["reject_file"])
         self.info_path = Path(config["info_file"])
         self.poll_interval = config.get("poll_interval", 2.0)
-        self.timeout_minutes = config.get("timeout_minutes", 60)
+        timeout = config.get("timeout_minutes")
+        self.timeout_minutes = timeout if timeout is not None else 60
         
     def run(self):
         logging.basicConfig(level=logging.INFO)

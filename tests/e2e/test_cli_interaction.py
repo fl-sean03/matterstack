@@ -1,214 +1,193 @@
-import pytest
+import re
 import sys
-import shutil
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
-from matterstack.cli.main import main, find_run, load_workspace_context
-from matterstack.core.run import RunHandle
+import pytest
 
-# Mock data
-WORKSPACE_SLUG = "test_workspace"
-RUN_ID = "test_run_123"
+from matterstack.cli.main import main
+from matterstack.storage.state_store import SQLiteStateStore
 
-@pytest.fixture
-def mock_workspace(tmp_path):
+
+WORKSPACE_SLUG = "test_workspace_attempts"
+TASK_ID = "ext_rerun_1"
+
+
+def _write_workspace_campaign(workspaces_root: Path) -> None:
     """
-    Sets up a mock workspace directory structure and main.py
+    Create workspaces/<slug>/main.py implementing get_campaign().
+
+    Campaign behavior:
+    - Creates one ExternalTask that runs via ComputeOperator on LocalBackend (MATTERSTACK_OPERATOR=HPC).
+    - Task command fails on first attempt and succeeds on second attempt by using a marker file
+      placed at the run root (../../../../rerun_marker) from the backend workdir layout.
+    - Adds a dependent blocker task so the run does not become terminal when ext_rerun_1 fails,
+      allowing rerun to be issued while the run is still RUNNING.
     """
-    ws_path = tmp_path / "workspaces" / WORKSPACE_SLUG
-    ws_path.mkdir(parents=True)
-    
-    # Create a mock main.py
-    main_py = ws_path / "main.py"
-    main_py.write_text("""
-class MockCampaign:
-    pass
+    ws_dir = workspaces_root / WORKSPACE_SLUG
+    ws_dir.mkdir(parents=True, exist_ok=True)
+
+    campaign_py = ws_dir / "main.py"
+    campaign_py.write_text(
+        """
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from matterstack.core.campaign import Campaign
+from matterstack.core.workflow import Workflow, Task
+from matterstack.core.external import ExternalTask
+
+
+class AttemptE2ECampaign(Campaign):
+    def plan(self, state: Any) -> Optional[Workflow]:
+        if state is None:
+            wf = Workflow()
+
+            # ExternalTask: force ComputeOperator path (attempt-aware) using MATTERSTACK_OPERATOR.
+            # Command:
+            # - attempt 1: create rerun_marker at run root and exit 1 (FAILED)
+            # - attempt 2: rerun_marker exists, exit 0 (COMPLETED)
+            cmd = (
+                "bash -lc "
+                "\\""
+                "if [ -f ../../../../rerun_marker ]; then "
+                "  echo 'attempt2 ok'; exit 0; "
+                "else "
+                "  echo 'attempt1 fail'; touch ../../../../rerun_marker; exit 1; "
+                "fi"
+                "\\""
+            )
+
+            t = ExternalTask(
+                task_id="ext_rerun_1",
+                image="ubuntu:latest",
+                command=cmd,
+                env={"MATTERSTACK_OPERATOR": "HPC"},
+            )
+            wf.add_task(t)
+
+            # Keep the run RUNNING even if ext_rerun_1 fails by adding a dependent task.
+            blocker = Task(
+                task_id="blocker_after_ext_rerun_1",
+                image="ubuntu:latest",
+                command="echo blocker",
+                dependencies={"ext_rerun_1"},
+            )
+            wf.add_task(blocker)
+            return wf
+
+        return None
+
+    def analyze(self, state: Any, results: Any) -> Any:
+        return {"done": True}
+
 
 def get_campaign():
-    return MockCampaign()
-""")
-    
-    return tmp_path
+    return AttemptE2ECampaign()
+""".lstrip()
+    )
+
+
+def _run_cli(capsys: pytest.CaptureFixture[str], argv: list[str]) -> str:
+    """
+    Run the CLI entrypoint with patched argv and return stdout.
+    """
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(sys, "argv", ["main.py", *argv])
+        main()
+    out = capsys.readouterr().out
+    return out
+
+
+def _parse_run_id(init_stdout: str) -> str:
+    m = re.search(r"Run initialized:\s+([^\s]+)", init_stdout)
+    assert m, f"Could not parse run_id from init output:\n{init_stdout}"
+    return m.group(1)
+
+
+def _db_path(tmp_path: Path, run_id: str) -> Path:
+    return tmp_path / "workspaces" / WORKSPACE_SLUG / "runs" / run_id / "state.sqlite"
+
 
 @pytest.fixture
-def mock_run_dir(mock_workspace):
-    """
-    Creates a mock run directory inside the workspace
-    """
-    run_dir = mock_workspace / "workspaces" / WORKSPACE_SLUG / "runs" / RUN_ID
-    run_dir.mkdir(parents=True)
-    
-    # Create dummy db file so validation passes if needed
-    (run_dir / "state.sqlite").touch()
-    
-    return run_dir
+def e2e_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    # Ensure Path("workspaces") in the CLI points at tmp_path/workspaces.
+    monkeypatch.chdir(tmp_path)
+    _write_workspace_campaign(tmp_path / "workspaces")
+    return tmp_path
 
-def test_load_workspace_context(mock_workspace):
-    """
-    Test dynamic loading of workspace module
-    """
-    # The CLI uses Path("workspaces") to find the workspace directory.
-    # When we patch Path to return mock_workspace, Path("workspaces") becomes mock_workspace / "workspaces"
-    # which is what we want because mock_workspace is the tmp_path containing the workspaces dir.
-    # HOWEVER, Path("workspaces") / slug / "main.py"
-    # -> mock_workspace / "workspaces" / slug / "main.py"
-    # The issue is likely that mock_workspace ALREADY contains "workspaces" dir as created in the fixture.
-    
-    # Let's inspect what's happening.
-    # The CLI code: Path("workspaces") / workspace_slug / "main.py"
-    # If we patch Path to return mock_workspace (which is a Path object),
-    # Path("workspaces") call returns mock_workspace? No, Path("workspaces") instantiates a Path object.
-    
-    # `return_value=mock_workspace` means calling `Path(...)` returns `mock_workspace`.
-    # So `Path("workspaces")` -> `mock_workspace`.
-    # `mock_workspace` is `/tmp/...`
-    # CLI does: `mock_workspace` / `workspace_slug` / "main.py"
-    # -> `/tmp/.../test_workspace/main.py`
-    
-    # BUT my fixture created:
-    # ws_path = tmp_path / "workspaces" / WORKSPACE_SLUG
-    # So the file is at `/tmp/.../workspaces/test_workspace/main.py`
-    
-    # So if Path("workspaces") returns `/tmp/...`, then we are looking at `/tmp/.../test_workspace/main.py`
-    # But file is at `/tmp/.../workspaces/test_workspace/main.py`
-    
-    # So I should mock Path such that Path("workspaces") returns mock_workspace / "workspaces"
-    
-    with patch("matterstack.cli.main.Path") as MockPath:
-        # When Path("workspaces") is called, return the correct path
-        def side_effect(arg=None):
-            if arg == "workspaces":
-                return mock_workspace / "workspaces"
-            return Path(arg) if arg else Path(".")
-            
-        MockPath.side_effect = side_effect
-        
-        campaign = load_workspace_context(WORKSPACE_SLUG)
-        assert campaign.__class__.__name__ == "MockCampaign"
 
-def test_find_run(mock_run_dir, mock_workspace):
-    """
-    Test finding a run directory
-    """
-    # Because find_run iterates over "workspaces" in current dir,
-    # we need to pass the base_path to it, but the CLI hardcodes "workspaces" mostly.
-    # However, find_run takes a base_path arg.
-    
-    base_path = mock_workspace / "workspaces"
-    
-    handle = find_run(RUN_ID, base_path=base_path)
-    assert handle is not None
-    assert handle.run_id == RUN_ID
-    assert handle.workspace_slug == WORKSPACE_SLUG
-    assert handle.root_path == mock_run_dir
+def test_cli_revive_transitions_run_status(e2e_workspace: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Initialize run via CLI
+    init_out = _run_cli(capsys, ["init", WORKSPACE_SLUG])
+    run_id = _parse_run_id(init_out)
 
-def test_cli_init_command(mock_workspace):
-    """
-    Test 'init' command calls initialize_run
-    """
-    with patch("matterstack.cli.main.initialize_run") as mock_init:
-        # Mock RunHandle return
-        mock_handle = RunHandle(
-            workspace_slug=WORKSPACE_SLUG,
-            run_id=RUN_ID,
-            root_path=Path("/tmp/fake")
-        )
-        mock_init.return_value = mock_handle
-        
-        # Patch Path so it finds our mock workspace
-        with patch("matterstack.cli.main.Path") as MockPath:
-            # We need MockPath("workspaces") to return mock_workspace/workspaces
-            # This is getting tricky because of how we used Path in the code.
-            # Let's just mock load_workspace_context to avoid filesystem issues
-            
-            with patch("matterstack.cli.main.load_workspace_context") as mock_load:
-                mock_load.return_value = MagicMock()
-                
-                # Execute CLI
-                test_args = ["main.py", "init", WORKSPACE_SLUG]
-                with patch.object(sys, 'argv', test_args):
-                     main()
-                
-                mock_load.assert_called_once_with(WORKSPACE_SLUG)
-                mock_init.assert_called_once()
+    store = SQLiteStateStore(_db_path(e2e_workspace, run_id))
+    store.set_run_status(run_id, "COMPLETED", reason="forced by test")
 
-def test_cli_step_command(mock_run_dir, mock_workspace):
-    """
-    Test 'step' command calls step_run
-    """
-    with patch("matterstack.cli.main.step_run") as mock_step:
-        mock_step.return_value = "active"
-        
-        # We need to patch find_run to return a handle because of the hardcoded path
-        with patch("matterstack.cli.main.find_run") as mock_find:
-            mock_find.return_value = RunHandle(
-                workspace_slug=WORKSPACE_SLUG,
-                run_id=RUN_ID,
-                root_path=mock_run_dir
-            )
-            
-            with patch("matterstack.cli.main.load_workspace_context") as mock_load:
-                 mock_load.return_value = MagicMock()
-                 
-                 test_args = ["main.py", "step", RUN_ID]
-                 with patch.object(sys, 'argv', test_args):
-                     main()
-                     
-                 mock_step.assert_called_once()
+    # Revive should set to PENDING and record reason
+    revive_out = _run_cli(capsys, ["revive", run_id])
+    assert f"Run {run_id} revived:" in revive_out
 
-def test_cli_status_command(mock_run_dir, mock_workspace):
-    """
-    Test 'status' command prints summary
-    """
-    # We need to mock SQLiteStateStore
-    with patch("matterstack.cli.main.SQLiteStateStore") as MockStore:
-        mock_store_instance = MockStore.return_value
-        
-        # Mock get_tasks
-        mock_task = MagicMock()
-        mock_task.task_id = "task1"
-        mock_store_instance.get_tasks.return_value = [mock_task]
-        mock_store_instance.get_task_status.return_value = "COMPLETED"
-        
-        with patch("matterstack.cli.main.find_run") as mock_find:
-            mock_find.return_value = RunHandle(
-                workspace_slug=WORKSPACE_SLUG,
-                run_id=RUN_ID,
-                root_path=mock_run_dir
-            )
-            
-            test_args = ["main.py", "status", RUN_ID]
-            with patch.object(sys, 'argv', test_args):
-                # We can verify it runs without error, verifying output is harder without capturing stdout
-                # but valid for now.
-                main()
-                
-            mock_store_instance.get_tasks.assert_called_once_with(RUN_ID)
+    assert store.get_run_status(run_id) == "PENDING"
+    reason = store.get_run_status_reason(run_id)
+    assert reason is not None
+    assert "Revived via CLI" in reason
 
-def test_cli_loop_command(mock_run_dir):
-    """
-    Test 'loop' command loops until completion
-    """
-    # Mock run_until_completion to avoid infinite loop logic in CLI if mocks fail
-    with patch("matterstack.cli.main.run_until_completion") as mock_loop:
-        mock_loop.return_value = "COMPLETED"
-        
-        with patch("matterstack.cli.main.find_run") as mock_find:
-            mock_find.return_value = RunHandle(
-                workspace_slug=WORKSPACE_SLUG,
-                run_id=RUN_ID,
-                root_path=mock_run_dir
-            )
-            
-            with patch("matterstack.cli.main.load_workspace_context") as mock_load:
-                 mock_campaign = MagicMock()
-                 mock_load.return_value = mock_campaign
-                 
-                 test_args = ["main.py", "loop", RUN_ID]
-                 with patch.object(sys, 'argv', test_args):
-                     # Patch time.sleep to run fast
-                     with patch("time.sleep"):
-                         main()
-                     
-                 mock_loop.assert_called_once()
+
+def test_cli_rerun_creates_second_attempt_and_attempts_lists_two(
+    e2e_workspace: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Initialize run via CLI
+    init_out = _run_cli(capsys, ["init", WORKSPACE_SLUG])
+    run_id = _parse_run_id(init_out)
+
+    store = SQLiteStateStore(_db_path(e2e_workspace, run_id))
+
+    # Step 1: submit attempt 1
+    _run_cli(capsys, ["step", run_id])
+
+    # Step 2: poll -> fail attempt 1 (command writes marker and exits 1)
+    _run_cli(capsys, ["step", run_id])
+
+    attempts_1 = store.list_attempts(TASK_ID)
+    assert len(attempts_1) == 1
+    assert attempts_1[0].attempt_index == 1
+    assert attempts_1[0].status in {"FAILED", "COMPLETED", "WAITING_EXTERNAL", "RUNNING", "SUBMITTED"}
+
+    # Issue rerun via CLI (force avoids interactive prompt)
+    rerun_out = _run_cli(capsys, ["rerun", run_id, TASK_ID, "--force"])
+    assert "Rerun queued" in rerun_out
+
+    # Step 3: submit attempt 2
+    _run_cli(capsys, ["step", run_id])
+
+    # Step 4: poll -> complete attempt 2 (marker exists so command exits 0)
+    _run_cli(capsys, ["step", run_id])
+
+    attempts_2 = store.list_attempts(TASK_ID)
+    assert len(attempts_2) == 2
+    assert attempts_2[0].attempt_index == 1
+    assert attempts_2[1].attempt_index == 2
+    assert attempts_2[0].attempt_id != attempts_2[1].attempt_id
+
+    # Validate attempts CLI output includes two rows (plus header)
+    attempts_out = _run_cli(capsys, ["attempts", run_id, TASK_ID])
+    lines = [ln for ln in attempts_out.splitlines() if ln.strip()]
+
+    assert len(lines) == 3, f"Expected header + 2 rows, got:\n{attempts_out}"
+    assert lines[0].startswith(
+        "attempt_id\tattempt_index\tstatus\toperator_type\texternal_id\tartifact_path\tconfig_hash"
+    )
+
+    # Ensure both attempt_ids appear in output
+    assert attempts_2[0].attempt_id in attempts_out
+    assert attempts_2[1].attempt_id in attempts_out
+
+    # Ensure config_hash is non-empty and looks like a sha256 for both rows
+    row1 = lines[1].split("\t")
+    row2 = lines[2].split("\t")
+    assert len(row1) == 7
+    assert len(row2) == 7
+    assert re.fullmatch(r"[0-9a-f]{64}", row1[-1]), f"Unexpected config_hash row1: {row1[-1]}"
+    assert re.fullmatch(r"[0-9a-f]{64}", row2[-1]), f"Unexpected config_hash row2: {row2[-1]}"

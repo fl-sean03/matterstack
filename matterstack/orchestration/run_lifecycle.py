@@ -210,9 +210,29 @@ def step_run(
              # If we wanted to allow polling, we'd restructure this.
              return "PAUSED"
 
-        # 1. POLL Phase: Check external runs
-        active_external = store.get_active_external_runs(run_handle.run_id)
-        
+        # 1. POLL Phase: attempt-aware polling (schema v2 primary path)
+        #
+        # Status mapping (attempt/external status -> task status):
+        # - SUBMITTED maps to WAITING_EXTERNAL for user-facing stability in v0.2.5.
+        # - We do NOT create attempts for local "simulated" tasks (the branch that directly marks COMPLETED).
+        # - Back-compat: we only poll legacy `external_runs` for tasks that have no attempts.
+        def _task_status_from_external_status(s: ExternalRunStatus) -> str:
+            if s == ExternalRunStatus.CREATED:
+                return "PENDING"
+            if s == ExternalRunStatus.SUBMITTED:
+                return "WAITING_EXTERNAL"
+            if s == ExternalRunStatus.RUNNING:
+                return "RUNNING"
+            if s == ExternalRunStatus.WAITING_EXTERNAL:
+                return "WAITING_EXTERNAL"
+            if s == ExternalRunStatus.COMPLETED:
+                return "COMPLETED"
+            if s == ExternalRunStatus.FAILED:
+                return "FAILED"
+            if s == ExternalRunStatus.CANCELLED:
+                return "CANCELLED"
+            return "UNKNOWN"
+
         # Simple Operator Registry
         from matterstack.runtime.operators.human import HumanOperator
         from matterstack.runtime.operators.experiment import ExperimentOperator
@@ -228,57 +248,130 @@ def step_run(
                 "Human": HumanOperator(),
                 "Experiment": ExperimentOperator(),
                 "Local": ComputeOperator(backend=local_backend, slug="local", operator_name="Local"),
-                "HPC": ComputeOperator(backend=local_backend, slug="hpc", operator_name="HPC")
+                "HPC": ComputeOperator(backend=local_backend, slug="hpc", operator_name="HPC"),
             }
 
+        attempt_task_ids = store.get_attempt_task_ids(run_handle.run_id)
+        active_attempts = store.get_active_attempts(run_handle.run_id)
+
+        # Poll active attempts (v2)
+        for attempt in active_attempts:
+            if not attempt.operator_type:
+                # "stub" / incomplete attempts won't be polled; we still heal task status below.
+                store.update_task_status(
+                    attempt.task_id,
+                    _task_status_from_external_status(ExternalRunStatus(attempt.status)),
+                )
+                continue
+
+            op_type = attempt.operator_type
+            if op_type not in operators:
+                # Unknown operator type: skip polling but still heal task status
+                store.update_task_status(
+                    attempt.task_id,
+                    _task_status_from_external_status(ExternalRunStatus(attempt.status)),
+                )
+                continue
+
+            op = operators[op_type]
+            try:
+                ext_handle = ExternalRunHandle(
+                    task_id=attempt.task_id,
+                    operator_type=attempt.operator_type,
+                    external_id=attempt.external_id,
+                    status=ExternalRunStatus(attempt.status),
+                    operator_data=attempt.operator_data or {},
+                    relative_path=Path(attempt.relative_path)
+                    if attempt.relative_path
+                    else None,
+                )
+
+                old_status = ext_handle.status
+                updated_handle = op.check_status(ext_handle)
+
+                if updated_handle.status != old_status:
+                    logger.info(
+                        f"Attempt {attempt.attempt_id} (task {attempt.task_id}) transitioned to {updated_handle.status}"
+                    )
+
+                # If completed or failed, try to collect results (logs are important on failure)
+                if updated_handle.status in [ExternalRunStatus.COMPLETED, ExternalRunStatus.FAILED]:
+                    try:
+                        result = op.collect_results(updated_handle)
+                        if result.files:
+                            files_dict = {k: str(v) for k, v in result.files.items()}
+                            updated_handle.operator_data["output_files"] = files_dict
+                        if result.data:
+                            updated_handle.operator_data["output_data"] = result.data
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to collect results for attempt {attempt.attempt_id} (task {attempt.task_id}): {e}"
+                        )
+
+                # Persist attempt state (always, for "healing" + operator_data updates)
+                store.update_attempt(
+                    attempt.attempt_id,
+                    status=updated_handle.status.value,
+                    operator_type=updated_handle.operator_type,
+                    external_id=updated_handle.external_id,
+                    operator_data=updated_handle.operator_data,
+                    relative_path=updated_handle.relative_path,
+                )
+
+                # Heal/sync task status from attempt status (even if unchanged)
+                store.update_task_status(
+                    attempt.task_id, _task_status_from_external_status(updated_handle.status)
+                )
+
+            except Exception as e:
+                logger.error(
+                    f"Error checking status for attempt {attempt.attempt_id} (task {attempt.task_id}): {e}"
+                )
+
+        # Poll legacy external runs (v1 fallback) ONLY for tasks that have no attempts
+        active_external = store.get_active_external_runs(run_handle.run_id)
         for ext_handle in active_external:
+            if ext_handle.task_id in attempt_task_ids:
+                continue
+
             op_type = ext_handle.operator_type
             if op_type in operators:
                 op = operators[op_type]
                 try:
                     old_status = ext_handle.status
                     updated_handle = op.check_status(ext_handle)
-                    
+
                     if updated_handle.status != old_status:
-                        logger.info(f"External Run {ext_handle.task_id} transitioned to {updated_handle.status}")
-                        
-                        # If completed, try to collect results
-                        if updated_handle.status == ExternalRunStatus.COMPLETED:
-                            try:
-                                result = op.collect_results(updated_handle)
-                                if result.status == ExternalRunStatus.COMPLETED:
-                                    # Store output info in operator_data so analyze can see it
-                                    if result.files:
-                                        # Convert Path objects to strings for JSON serialization
-                                        files_dict = {k: str(v) for k, v in result.files.items()}
-                                        updated_handle.operator_data["output_files"] = files_dict
-                                    if result.data:
-                                        updated_handle.operator_data["output_data"] = result.data
-                            except Exception as e:
-                                logger.error(f"Failed to collect results for {ext_handle.task_id}: {e}")
-                        
-                        store.update_external_run(updated_handle)
-                        
-                        # Sync to Task Status
-                        # Map ExternalRunStatus to JobState strings
-                        status_map = {
-                            "CREATED": "PENDING",
-                            "SUBMITTED": "SUBMITTED",
-                            "RUNNING": "RUNNING",
-                            "WAITING_EXTERNAL": "WAITING_EXTERNAL",
-                            "COMPLETED": "COMPLETED",
-                            "FAILED": "FAILED",
-                            "CANCELLED": "CANCELLED"
-                        }
-                        task_status = status_map.get(updated_handle.status.name, "UNKNOWN")
-                        store.update_task_status(ext_handle.task_id, task_status)
-                        
+                        logger.info(
+                            f"Legacy External Run {ext_handle.task_id} transitioned to {updated_handle.status}"
+                        )
+
+                    if updated_handle.status in [ExternalRunStatus.COMPLETED, ExternalRunStatus.FAILED]:
+                        try:
+                            result = op.collect_results(updated_handle)
+                            if result.files:
+                                files_dict = {k: str(v) for k, v in result.files.items()}
+                                updated_handle.operator_data["output_files"] = files_dict
+                            if result.data:
+                                updated_handle.operator_data["output_data"] = result.data
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to collect results for legacy external run {ext_handle.task_id}: {e}"
+                            )
+
+                    store.update_external_run(updated_handle)
+
+                    # Heal/sync task status from legacy run status (SUBMITTED -> WAITING_EXTERNAL)
+                    store.update_task_status(
+                        ext_handle.task_id,
+                        _task_status_from_external_status(updated_handle.status),
+                    )
+
                 except Exception as e:
                     logger.error(f"Error checking status for {ext_handle.task_id}: {e}")
             else:
-                # logger.warning(f"Unknown operator type: {op_type}")
                 pass
-            
+
         # 2. PLAN Phase: Check dependencies and find ready tasks
         tasks = store.get_tasks(run_handle.run_id)
     
@@ -322,9 +415,15 @@ def step_run(
                 has_active_tasks = True
                 stats["active"] += 1
                 continue
-                
+
+            # If status is still PENDING but there is an active attempt, don't resubmit
+            if task.task_id in {a.task_id for a in store.get_active_attempts(run_handle.run_id)}:
+                has_active_tasks = True
+                stats["active"] += 1
+                continue
+
             # Status is None or PENDING
-            
+
             # Check dependencies
             deps_met = True
             for dep_id in task.dependencies:
@@ -373,15 +472,32 @@ def step_run(
             except Exception as e:
                 logger.warning(f"Failed to read config.json, using default limit: {e}")
 
-        # Count active HPC runs
-        # We consider RUNNING and WAITING_EXTERNAL as "active" slots for now
-        # Ideally we check operator_type="DirectHPC", but let's count all external runs for safety
+        # Count active executions for concurrency (attempt-aware)
+        # We consider SUBMITTED/RUNNING/WAITING_EXTERNAL as occupying a slot.
         active_external_count = 0
+
+        attempt_task_ids = store.get_attempt_task_ids(run_handle.run_id)
+        active_attempts_for_slots = store.get_active_attempts(run_handle.run_id)
+        for a in active_attempts_for_slots:
+            if a.status in [
+                ExternalRunStatus.SUBMITTED.value,
+                ExternalRunStatus.RUNNING.value,
+                ExternalRunStatus.WAITING_EXTERNAL.value,
+            ]:
+                active_external_count += 1
+
+        # Legacy external_runs count ONLY for tasks that have no attempts
         active_external = store.get_active_external_runs(run_handle.run_id)
         for ext in active_external:
-            if ext.status in [ExternalRunStatus.RUNNING, ExternalRunStatus.WAITING_EXTERNAL, ExternalRunStatus.SUBMITTED]:
+            if ext.task_id in attempt_task_ids:
+                continue
+            if ext.status in [
+                ExternalRunStatus.RUNNING,
+                ExternalRunStatus.WAITING_EXTERNAL,
+                ExternalRunStatus.SUBMITTED,
+            ]:
                 active_external_count += 1
-        
+
         slots_available = max_hpc_jobs - active_external_count
         if slots_available < 0:
             slots_available = 0
@@ -429,51 +545,93 @@ def step_run(
                 slots_available -= 1
 
             logger.info(f"Submitting task {task.task_id}")
-            
+
             if operator_type:
-                 # Register and Dispatch to Operator
-                 logger.info(f"Dispatching to Operator: {operator_type}")
-                 
-                 # Use existing operators map (which might be from registry)
-                 # Note: We assumed 'operators' variable from POLL phase is still available and correct
-                 
-                 if operator_type in operators:
-                     op = operators[operator_type]
-                     try:
-                         # 1. Prepare
-                         ext_handle = op.prepare_run(run_handle, task)
-                         store.register_external_run(ext_handle, run_handle.run_id)
-                         
-                         # 2. Submit
-                         ext_handle = op.submit(ext_handle)
-                         store.update_external_run(ext_handle)
-                         
-                         # Update Task Status
-                         store.update_task_status(task.task_id, "WAITING_EXTERNAL")
-                         has_active_tasks = True
-                         
-                     except Exception as e:
-                         logger.error(f"Failed to dispatch operator {operator_type}: {e}")
-                         import traceback
-                         traceback.print_exc()
-                         store.update_task_status(task.task_id, "FAILED")
-                 else:
-                     logger.error(f"Unknown operator type requested: {operator_type}")
-                     store.update_task_status(task.task_id, "FAILED")
-                 
+                # v2: Create attempt first, then dispatch to operator
+                logger.info(f"Dispatching to Operator: {operator_type}")
+
+                if operator_type in operators:
+                    op = operators[operator_type]
+                    attempt_id: Optional[str] = None
+                    try:
+                        attempt_id = store.create_attempt(
+                            run_id=run_handle.run_id,
+                            task_id=task.task_id,
+                            operator_type=operator_type,
+                            status=ExternalRunStatus.CREATED.value,
+                            operator_data={},
+                            relative_path=None,
+                        )
+
+                        # 1. Prepare (operator directory, manifests, etc.)
+                        ext_handle = op.prepare_run(run_handle, task)
+                        store.update_attempt(
+                            attempt_id,
+                            status=ext_handle.status.value,
+                            operator_type=ext_handle.operator_type,
+                            operator_data=ext_handle.operator_data,
+                            relative_path=ext_handle.relative_path,
+                        )
+
+                        # 2. Submit
+                        ext_handle = op.submit(ext_handle)
+                        store.update_attempt(
+                            attempt_id,
+                            status=ext_handle.status.value,
+                            operator_type=ext_handle.operator_type,
+                            external_id=ext_handle.external_id,
+                            operator_data=ext_handle.operator_data,
+                            relative_path=ext_handle.relative_path,
+                        )
+
+                        # Update Task Status (SUBMITTED -> WAITING_EXTERNAL)
+                        if ext_handle.status == ExternalRunStatus.SUBMITTED:
+                            store.update_task_status(task.task_id, "WAITING_EXTERNAL")
+                        else:
+                            store.update_task_status(
+                                task.task_id,
+                                "WAITING_EXTERNAL"
+                                if ext_handle.status == ExternalRunStatus.WAITING_EXTERNAL
+                                else ext_handle.status.value,
+                            )
+                        has_active_tasks = True
+
+                    except Exception as e:
+                        logger.error(f"Failed to dispatch operator {operator_type}: {e}")
+                        import traceback
+
+                        traceback.print_exc()
+                        if attempt_id is not None:
+                            try:
+                                store.update_attempt(
+                                    attempt_id,
+                                    status=ExternalRunStatus.FAILED.value,
+                                    operator_data={"error": str(e)},
+                                    status_reason=str(e),
+                                )
+                            except Exception:
+                                pass
+                        store.update_task_status(task.task_id, "FAILED")
+                else:
+                    logger.error(f"Unknown operator type requested: {operator_type}")
+                    store.update_task_status(task.task_id, "FAILED")
+
             elif isinstance(task, (ExternalTask, GateTask)):
-                 # Fallback for legacy classes not caught above
-                 ext_handle = ExternalRunHandle(
-                     task_id=task.task_id,
-                     operator_type="stub",
-                     status=ExternalRunStatus.WAITING_EXTERNAL
-                 )
-                 store.register_external_run(ext_handle, run_handle.run_id)
-                 store.update_task_status(task.task_id, "WAITING_EXTERNAL")
-                 has_active_tasks = True
-                 
+                # Attempt-aware placeholder for legacy "external coordination" tasks.
+                # No operator execution yet; we record a WAITING_EXTERNAL attempt for provenance/idempotency.
+                attempt_id = store.create_attempt(
+                    run_id=run_handle.run_id,
+                    task_id=task.task_id,
+                    operator_type="stub",
+                    status=ExternalRunStatus.WAITING_EXTERNAL.value,
+                    operator_data={},
+                    relative_path=None,
+                )
+                store.update_task_status(task.task_id, "WAITING_EXTERNAL")
+                has_active_tasks = True
+
             else:
-                # Local Compute Task - SIMULATION MODE for Verification
+                # Local Compute Task - SIMULATION MODE for Verification (no attempt record)
                 logger.info(f"Simulating Local execution for {task.task_id}")
                 store.update_task_status(task.task_id, "COMPLETED")
 
@@ -503,13 +661,27 @@ def step_run(
                 status = task_status_map.get(t.task_id, "UNKNOWN")
                 res_entry = {"status": status}
                 
-                # Retrieve external run data if available
-                ext_run = store.get_external_run(t.task_id)
-                if ext_run and ext_run.operator_data:
-                    if "output_files" in ext_run.operator_data:
-                        res_entry["files"] = ext_run.operator_data["output_files"]
-                    if "output_data" in ext_run.operator_data:
-                        res_entry["data"] = ext_run.operator_data["output_data"]
+                # Retrieve attempt-scoped output metadata if available (v2 primary)
+                attempt = store.get_current_attempt(t.task_id)
+                if attempt is None:
+                    # Defensive: if attempts exist but pointer is missing, pick the latest.
+                    attempts = store.list_attempts(t.task_id)
+                    if attempts:
+                        attempt = attempts[-1]
+
+                if attempt and attempt.operator_data:
+                    if "output_files" in attempt.operator_data:
+                        res_entry["files"] = attempt.operator_data["output_files"]
+                    if "output_data" in attempt.operator_data:
+                        res_entry["data"] = attempt.operator_data["output_data"]
+                else:
+                    # Legacy fallback (v1)
+                    ext_run = store.get_external_run(t.task_id)
+                    if ext_run and ext_run.operator_data:
+                        if "output_files" in ext_run.operator_data:
+                            res_entry["files"] = ext_run.operator_data["output_files"]
+                        if "output_data" in ext_run.operator_data:
+                            res_entry["data"] = ext_run.operator_data["output_data"]
                 
                 results[t.task_id] = res_entry
             
@@ -568,44 +740,53 @@ def step_run(
 
         return "RUNNING"
 
-def run_until_completion(run_handle: RunHandle, campaign: Campaign, poll_interval: float = 1.0) -> str:
+def run_until_completion(
+    run_handle: RunHandle,
+    campaign: Campaign,
+    poll_interval: float = 1.0,
+    *,
+    operator_registry: Optional[Dict[str, Any]] = None,
+) -> str:
     """
     Execute the campaign loop locally until the run is completed, failed, or cancelled.
-    
+
     This function blocks until the run reaches a terminal state.
     It handles:
     - Calling step_run() repeatedly.
     - Waiting if the run is PAUSED.
     - Retrying if the run is locked by another process (graceful contention).
-    
+
     Args:
         run_handle: The handle to the run.
         campaign: The campaign instance.
         poll_interval: Time to wait between ticks (seconds).
-        
+        operator_registry: Optional operator registry passed through to step_run().
+
     Returns:
         The final status of the run.
     """
     import time
-    
+
     logger.info(f"Starting local execution loop for run {run_handle.run_id}")
-    
+
     while True:
         try:
-            status = step_run(run_handle, campaign)
-            
+            status = step_run(run_handle, campaign, operator_registry=operator_registry)
+
             if status in ["COMPLETED", "FAILED", "CANCELLED"]:
                 logger.info(f"Run {run_handle.run_id} finished with status: {status}")
                 return status
-                
+
             if status == "PAUSED":
                 logger.info(f"Run {run_handle.run_id} is PAUSED. Waiting...")
                 time.sleep(5)
                 continue
-                
+
         except RuntimeError as re:
             if "Could not acquire lock" in str(re):
-                logger.warning(f"Run {run_handle.run_id} is locked by another process. Retrying...")
+                logger.warning(
+                    f"Run {run_handle.run_id} is locked by another process. Retrying..."
+                )
                 time.sleep(1)
                 continue
             else:
@@ -613,7 +794,7 @@ def run_until_completion(run_handle: RunHandle, campaign: Campaign, poll_interva
         except Exception as e:
             logger.error(f"Error in execution loop: {e}")
             raise
-            
+
         time.sleep(poll_interval)
 
 def list_active_runs(base_path: Path = Path("workspaces")) -> List[RunHandle]:

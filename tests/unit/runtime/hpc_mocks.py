@@ -36,7 +36,11 @@ class MockSSHClient:
         pass
 
     async def run(self, command: str, *, cwd: Optional[str] = None) -> CommandResult:
-        self.cmds_executed.append(command)
+        # Record both command and cwd for assertions.
+        if cwd is None:
+            self.cmds_executed.append(command)
+        else:
+            self.cmds_executed.append(f"[cwd={cwd}] {command}")
         
         # 1. Handle sbatch
         if command.startswith("sbatch "):
@@ -173,7 +177,13 @@ class MockSSHClient:
                     with open(l_file, "rb") as f_in:
                         self.files[r_file] = f_in.read()
 
-    async def get(self, remote_path: str, local_path: str, recursive: bool = False) -> None:
+    async def get(
+        self,
+        remote_path: str,
+        local_path: str,
+        recursive: bool = False,
+        filter_callback: Optional[callable[[str], bool]] = None
+    ) -> None:
         # Determine if remote_path acts as a file or directory
         is_exact_file = remote_path in self.files
         
@@ -197,6 +207,10 @@ class MockSSHClient:
         found_any = False
         for r_path, content in self.files.items():
             if r_path.startswith(prefix):
+                # Apply filter if provided
+                if filter_callback and not filter_callback(r_path):
+                    continue
+
                 found_any = True
                 rel = r_path[len(prefix):] # Path inside dir
                 

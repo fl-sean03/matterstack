@@ -225,10 +225,23 @@ class SSHClient:
 
         return await asyncio.to_thread(_read)
 
-    async def get(self, remote_path: str, local_path: str, recursive: bool = False) -> None:
+    async def get(
+        self,
+        remote_path: str,
+        local_path: str,
+        recursive: bool = False,
+        filter_callback: Optional[callable[[str], bool]] = None
+    ) -> None:
         """
         Download a file or directory from the remote host.
         If recursive is True, downloads a directory.
+        
+        Args:
+            remote_path: Source path on remote.
+            local_path: Destination path on local.
+            recursive: Whether to download directories recursively.
+            filter_callback: Optional function that takes a remote path (str) and returns True if it should be downloaded.
+                             Only applies to files when recursive is True.
         
         Raises:
             IOError: If download fails.
@@ -276,6 +289,10 @@ class SSHClient:
                         if stat.S_ISDIR(attr.st_mode):
                             stack.append((r_item, l_item))
                         else:
+                            # Apply filter if provided
+                            if filter_callback and not filter_callback(r_item):
+                                continue
+                                
                             try:
                                 sftp.get(r_item, l_item)
                             except IOError as e:

@@ -41,7 +41,7 @@ class ExternalTask(Task):
             "response_path": self.response_path,
             "request_data": self.request_data,
             "poll_interval": self.poll_interval,
-            "timeout_minutes": self.time_limit_minutes
+            "timeout_minutes": self.time_limit_minutes if self.time_limit_minutes is not None else 60
         }
         
         # We pass the config as a JSON string argument
@@ -68,7 +68,9 @@ class ExternalTaskWrapper:
         self.response_path = Path(config["response_path"])
         self.request_data = config.get("request_data", {})
         self.poll_interval = config.get("poll_interval", 5.0)
-        self.timeout_minutes = config.get("timeout_minutes", 60)
+        # Ensure we have a valid timeout even if config has None explicitly
+        timeout = config.get("timeout_minutes")
+        self.timeout_minutes = timeout if timeout is not None else 60
         
     def run(self):
         logging.basicConfig(level=logging.INFO)

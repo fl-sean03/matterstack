@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2025-12-14
+### Added
+- **Task Attempts**: First-class attempt history per logical task, enabling provenance-safe reruns without overwriting artifacts.
+- **Attempt-aware CLI**: New commands `revive`, `rerun`, `attempts`, and `cancel-attempt` for operational control of long-running runs.
+- **Canonical HPC validation workspace**: `workspaces/hpc_attempts_validation/` demonstrating fail → rerun → succeed with preserved attempt evidence (local + Slurm).
+- **Opt-in pytest stability mitigation**: `sitecustomize.py` gated by `MATTERSTACK_PYTEST_STUB_READLINE=1` for environments where pytest triggers segfaults.
+
+### Changed
+- **Orchestration**: Run lifecycle now operates on attempts (submission, polling, concurrency accounting, and results collection).
+- **HPC execution layout**: Attempt-scoped local evidence directories and attempt-scoped remote workdirs to prevent artifact collisions.
+- **Evidence export**: Evidence bundles now include attempt history and current-attempt metadata, with legacy external-run fallback.
+
+### Fixed
+- **HPC backend API mismatch**: Aligned Slurm download keyword signature with the ComputeBackend interface to avoid runtime `TypeError`.
+- **Local backend collection**: Corrected download/collection behavior when executing locally in “HPC mode” (LocalBackend + ComputeOperator).
+
 ## [0.2.3] - 2025-11-26
 ### Added
 - **Smoke Test**: New `matterstack self-test` command for quick operational verification.

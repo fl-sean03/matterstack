@@ -1,13 +1,17 @@
 import argparse
 import sys
 import logging
-import importlib.util
 import time
 import random
 from pathlib import Path
 from typing import Optional, Any, Dict
 
-from matterstack.orchestration.run_lifecycle import initialize_run, step_run, list_active_runs, run_until_completion
+from matterstack.orchestration.run_lifecycle import (
+    initialize_run,
+    step_run,
+    list_active_runs,
+    run_until_completion,
+)
 from matterstack.storage.state_store import SQLiteStateStore
 from matterstack.storage.export import build_evidence_bundle, export_evidence_bundle
 from matterstack.core.run import RunHandle
@@ -15,6 +19,9 @@ from matterstack.core.campaign import Campaign
 from matterstack.core.workflow import Workflow, Task
 from matterstack.orchestration.diagnostics import get_run_frontier
 from matterstack.cli.tui import CampaignMonitor
+from matterstack.cli.utils import load_workspace_context, find_run
+from matterstack.cli.reset import cmd_reset, get_dependents
+from matterstack.cli.operator_registry import RegistryConfig, build_operator_registry
 import tempfile
 import shutil
 
@@ -24,54 +31,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("cli")
-
-def load_workspace_context(workspace_slug: str) -> Any:
-    """
-    Dynamically load the workspace module and retrieve the campaign.
-    Expects 'workspaces/{workspace_slug}/main.py' to exist.
-    It looks for a 'get_campaign()' function.
-    """
-    workspace_path = Path("workspaces") / workspace_slug
-    main_py = workspace_path / "main.py"
-    
-    if not main_py.exists():
-        raise FileNotFoundError(f"Workspace main file not found: {main_py}")
-        
-    spec = importlib.util.spec_from_file_location(f"workspace.{workspace_slug}", main_py)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load spec for {main_py}")
-        
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[f"workspace.{workspace_slug}"] = module
-    spec.loader.exec_module(module)
-    
-    if hasattr(module, "get_campaign"):
-        return module.get_campaign()
-    else:
-        # Fallback: try to find a Campaign subclass to instantiate?
-        # For now, let's strictly require get_campaign or raise helpful error
-        # But for Thrust 9 testing purposes, maybe we can hack it if it doesn't exist?
-        # No, strict is better. The user will be told to implement it.
-        # However, for testing this CLI before Thrust 10, we might need to mock this.
-        raise AttributeError(f"Workspace module {main_py} does not export 'get_campaign()'.")
-
-def find_run(run_id: str, base_path: Path = Path("workspaces")) -> Optional[RunHandle]:
-    """
-    Locate a run directory by searching all workspaces.
-    """
-    if not base_path.exists():
-        return None
-        
-    for ws_dir in base_path.iterdir():
-        if ws_dir.is_dir():
-            run_dir = ws_dir / "runs" / run_id
-            if run_dir.exists():
-                return RunHandle(
-                    workspace_slug=ws_dir.name,
-                    run_id=run_id,
-                    root_path=run_dir
-                )
-    return None
 
 def cmd_init(args):
     """
@@ -93,18 +52,29 @@ def cmd_step(args):
     """
     run_id = args.run_id
     handle = find_run(run_id)
-    
+
     if not handle:
         logger.error(f"Run {run_id} not found.")
         sys.exit(1)
-        
+
     try:
         campaign = load_workspace_context(handle.workspace_slug)
-        status = step_run(handle, campaign)
+
+        operator_registry = build_operator_registry(
+            handle,
+            registry_config=RegistryConfig(
+                config_path=getattr(args, "config", None),
+                profile=getattr(args, "profile", None),
+                hpc_config_path=getattr(args, "hpc_config", None),
+            ),
+        )
+
+        status = step_run(handle, campaign, operator_registry=operator_registry)
         print(f"Run {run_id} step complete. Status: {status}")
     except Exception as e:
         logger.error(f"Failed to step run: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
@@ -141,66 +111,72 @@ def cmd_loop(args):
     Loop step until run is completed or failed.
     """
     run_id = args.run_id
-    
+
     # --- Single Run Mode ---
     if run_id:
         handle = find_run(run_id)
-        
+
         if not handle:
             logger.error(f"Run {run_id} not found.")
             sys.exit(1)
 
         try:
             campaign = load_workspace_context(handle.workspace_slug)
-            run_until_completion(handle, campaign)
+
+            operator_registry = build_operator_registry(
+                handle,
+                registry_config=RegistryConfig(
+                    config_path=getattr(args, "config", None),
+                    profile=getattr(args, "profile", None),
+                    hpc_config_path=getattr(args, "hpc_config", None),
+                ),
+            )
+
+            run_until_completion(handle, campaign, operator_registry=operator_registry)
         except Exception as e:
             logger.error(f"Loop failed: {e}")
             import traceback
+
             traceback.print_exc()
             sys.exit(1)
-            
+
     # --- Multi-Run Scheduler Mode ---
     else:
         logger.info("Starting Multi-Run Scheduler Loop...")
-        
+
         try:
             while True:
                 active_runs = list_active_runs()
-                
+
                 if not active_runs:
                     logger.debug("No active runs found.")
                     time.sleep(5)
                     continue
-                
+
                 # Randomized Round-Robin to prevent starvation/convoys
                 random.shuffle(active_runs)
-                
+
                 runs_processed = 0
-                
+
                 for handle in active_runs:
                     try:
-                        # Attempt to step the run
-                        # We need to load the campaign first.
-                        # We do this inside the loop to ensure we pick up code changes if we wanted to (though modules are cached)
-                        # but mainly to keep context fresh.
-                        
-                        # Optimization: We could check if locked BEFORE loading heavy context?
-                        # But step_run handles the locking.
-                        # However, step_run loads the store.
-                        
-                        # To implement "Skip if locked", we need to catch the RuntimeError from step_run
-                        # OR check lock manually.
-                        
-                        # Let's wrap step_run calls.
-                        
                         campaign = load_workspace_context(handle.workspace_slug)
-                        
+
+                        operator_registry = build_operator_registry(
+                            handle,
+                            registry_config=RegistryConfig(
+                                config_path=getattr(args, "config", None),
+                                profile=getattr(args, "profile", None),
+                                hpc_config_path=getattr(args, "hpc_config", None),
+                            ),
+                        )
+
                         # We use step_run which attempts to lock.
-                        status = step_run(handle, campaign)
-                        
+                        status = step_run(handle, campaign, operator_registry=operator_registry)
+
                         logger.info(f"Stepped run {handle.run_id} -> {status}")
                         runs_processed += 1
-                        
+
                     except RuntimeError as re:
                         if "Could not acquire lock" in str(re):
                             logger.debug(f"Run {handle.run_id} is locked. Skipping.")
@@ -210,18 +186,20 @@ def cmd_loop(args):
                     except Exception as e:
                         logger.error(f"Error stepping run {handle.run_id}: {e}")
                         import traceback
+
                         traceback.print_exc()
-                
+
                 # Adjust sleep based on load?
                 # For now, constant sleep
                 time.sleep(1)
-                
+
         except KeyboardInterrupt:
             logger.info("Scheduler stopped by user.")
             sys.exit(0)
         except Exception as e:
             logger.critical(f"Scheduler crashed: {e}")
             import traceback
+
             traceback.print_exc()
             sys.exit(1)
 
@@ -285,6 +263,233 @@ def cmd_resume(args):
     except Exception as e:
         logger.error(f"Failed to resume run: {e}")
         sys.exit(1)
+
+def _confirm_or_exit(force: bool, prompt: str) -> None:
+    if force:
+        return
+    confirm = input(f"{prompt} [y/N] ")
+    if confirm.lower() != "y":
+        print("Aborted.")
+        sys.exit(0)
+
+
+def cmd_revive(args):
+    """
+    Revive a terminal run (FAILED/COMPLETED/CANCELLED) back to PENDING.
+    """
+    run_id = args.run_id
+    handle = find_run(run_id)
+
+    if not handle:
+        logger.error(f"Run {run_id} not found.")
+        sys.exit(1)
+
+    try:
+        store = SQLiteStateStore(handle.db_path)
+        current = store.get_run_status(run_id)
+
+        terminal = {"FAILED", "COMPLETED", "CANCELLED"}
+        if current in terminal:
+            reason = f"Revived via CLI from {current}"
+            store.set_run_status(run_id, "PENDING", reason=reason)
+            print(f"Run {run_id} revived: {current} -> PENDING")
+        else:
+            print(f"Run {run_id} is {current}; revive is a no-op.")
+    except Exception as e:
+        logger.error(f"Failed to revive run: {e}")
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
+
+def cmd_rerun(args):
+    """
+    Mark a task as PENDING so that the next scheduler tick creates a new attempt.
+    Optionally recurse to dependent tasks.
+    """
+    run_id = args.run_id
+    task_id = args.task_id
+    recursive = args.recursive
+    force = args.force
+
+    handle = find_run(run_id)
+    if not handle:
+        logger.error(f"Run {run_id} not found.")
+        sys.exit(1)
+
+    try:
+        store = SQLiteStateStore(handle.db_path)
+
+        # Validate task exists within this run
+        tasks = store.get_tasks(run_id)
+        task_ids = {t.task_id for t in tasks}
+        if task_id not in task_ids:
+            logger.error(f"Task {task_id} not found in run {run_id}.")
+            sys.exit(1)
+
+        targets = {task_id}
+        if recursive:
+            deps = get_dependents(store, run_id, task_id)
+            targets.update(deps)
+
+        # Confirmation prompt
+        if not force:
+            print(f"You are about to RERUN (reset to PENDING) the following tasks in run {run_id}:")
+            for t in sorted(targets):
+                print(f"  - {t}")
+            _confirm_or_exit(False, "\nProceed?")
+
+        terminal_attempt_states = {"COMPLETED", "FAILED", "CANCELLED"}
+
+        with store.lock():
+            for tid in sorted(targets):
+                # If current attempt exists and is active, require --force
+                attempt = store.get_current_attempt(tid)
+                if attempt is not None and attempt.status not in terminal_attempt_states:
+                    if not force:
+                        logger.error(
+                            f"Task {tid} has an active attempt {attempt.attempt_id} in status {attempt.status}. "
+                            f"Use --force to cancel and rerun."
+                        )
+                        sys.exit(1)
+
+                    # Forced: mark attempt CANCELLED (backend cancellation is best-effort / not available here)
+                    store.update_attempt(
+                        attempt.attempt_id,
+                        status="CANCELLED",
+                        status_reason="User forced rerun via CLI (backend cancellation skipped)",
+                    )
+
+                # Also cancel any legacy external run rows to prevent zombies
+                store.cancel_external_runs(tid)
+
+                # Reset task to pending so next tick submits a NEW attempt
+                store.update_task_status(tid, "PENDING")
+
+        print(f"Rerun queued for {len(targets)} task(s). Next step/loop will create new attempt(s).")
+
+    except Exception as e:
+        logger.error(f"Failed to rerun task(s): {e}")
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
+
+def cmd_attempts(args):
+    """
+    List attempt history for a task (TSV).
+    """
+    run_id = args.run_id
+    task_id = args.task_id
+
+    handle = find_run(run_id)
+    if not handle:
+        logger.error(f"Run {run_id} not found.")
+        sys.exit(1)
+
+    try:
+        store = SQLiteStateStore(handle.db_path)
+
+        tasks = store.get_tasks(run_id)
+        task_ids = {t.task_id for t in tasks}
+        if task_id not in task_ids:
+            logger.error(f"Task {task_id} not found in run {run_id}.")
+            sys.exit(1)
+
+        attempts = store.list_attempts(task_id)
+
+        # TSV header (stable, parseable)
+        header = [
+            "attempt_id",
+            "attempt_index",
+            "status",
+            "operator_type",
+            "external_id",
+            "artifact_path",
+            "config_hash",
+        ]
+        print("\t".join(header))
+
+        for a in attempts:
+            config_hash = ""
+            try:
+                if a.operator_data and isinstance(a.operator_data, dict):
+                    config_hash = str(a.operator_data.get("config_hash") or "")
+            except Exception:
+                config_hash = ""
+
+            row = [
+                a.attempt_id or "",
+                str(a.attempt_index or ""),
+                a.status or "",
+                a.operator_type or "",
+                a.external_id or "",
+                a.relative_path or "",
+                config_hash,
+            ]
+            print("\t".join(row))
+
+    except Exception as e:
+        logger.error(f"Failed to list attempts: {e}")
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
+
+def cmd_cancel_attempt(args):
+    """
+    Cancel an attempt (best-effort; local-only DB cancellation if backend job cancellation is unavailable).
+    """
+    run_id = args.run_id
+    attempt_id = args.attempt_id
+    force = args.force
+
+    handle = find_run(run_id)
+    if not handle:
+        logger.error(f"Run {run_id} not found.")
+        sys.exit(1)
+
+    try:
+        store = SQLiteStateStore(handle.db_path)
+
+        attempt = store.get_attempt(attempt_id)
+        if attempt is None:
+            logger.error(f"Attempt {attempt_id} not found.")
+            sys.exit(1)
+
+        if attempt.run_id != run_id:
+            logger.error(f"Attempt {attempt_id} belongs to run {attempt.run_id}, not {run_id}.")
+            sys.exit(1)
+
+        if not force:
+            print(f"You are about to CANCEL attempt {attempt_id} (task {attempt.task_id}) in run {run_id}.")
+            _confirm_or_exit(False, "Proceed?")
+
+        with store.lock():
+            # Mark the attempt cancelled in DB (backend cancellation is skipped here)
+            store.update_attempt(
+                attempt_id,
+                status="CANCELLED",
+                status_reason="User cancelled attempt via CLI (backend cancellation skipped)",
+            )
+            # Heal task status to reflect current attempt state
+            store.update_task_status(attempt.task_id, "CANCELLED")
+            # Legacy external run safety
+            store.cancel_external_runs(attempt.task_id)
+
+        logger.info("Backend cancellation skipped (no job_id/backend available in local-only CLI path).")
+        print(f"Attempt {attempt_id} cancelled.")
+
+    except Exception as e:
+        logger.error(f"Failed to cancel attempt: {e}")
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
 
 def cmd_export_evidence(args):
     """
@@ -488,16 +693,42 @@ def main():
     # step
     parser_step = subparsers.add_parser("step", help="Execute one step of a run")
     parser_step.add_argument("run_id", help="Run ID")
+    parser_step.add_argument(
+        "--config",
+        help="Path to matterstack YAML config file containing execution profiles (optional)",
+    )
+    parser_step.add_argument(
+        "--profile",
+        help="Execution profile name to use for the HPC operator backend (optional)",
+    )
+    parser_step.add_argument(
+        "--hpc-config",
+        dest="hpc_config",
+        help="Path to legacy HPC YAML config (CURC atesting adapter). Overrides --profile for HPC backend.",
+    )
     parser_step.set_defaults(func=cmd_step)
-    
+
     # status
     parser_status = subparsers.add_parser("status", help="Show run status")
     parser_status.add_argument("run_id", help="Run ID")
     parser_status.set_defaults(func=cmd_status)
-    
+
     # loop
     parser_loop = subparsers.add_parser("loop", help="Loop run until completion or act as scheduler")
     parser_loop.add_argument("run_id", nargs="?", help="Run ID (optional). If omitted, runs in scheduler mode.")
+    parser_loop.add_argument(
+        "--config",
+        help="Path to matterstack YAML config file containing execution profiles (optional)",
+    )
+    parser_loop.add_argument(
+        "--profile",
+        help="Execution profile name to use for the HPC operator backend (optional)",
+    )
+    parser_loop.add_argument(
+        "--hpc-config",
+        dest="hpc_config",
+        help="Path to legacy HPC YAML config (CURC atesting adapter). Overrides --profile for HPC backend.",
+    )
     parser_loop.set_defaults(func=cmd_loop)
 
     # cancel
@@ -533,6 +764,41 @@ def main():
     # self-test
     parser_self_test = subparsers.add_parser("self-test", help="Run a self-test of the installation")
     parser_self_test.set_defaults(func=cmd_self_test)
+
+    # revive
+    parser_revive = subparsers.add_parser("revive", help="Revive a terminal run back to PENDING")
+    parser_revive.add_argument("run_id", help="Run ID")
+    parser_revive.set_defaults(func=cmd_revive)
+
+    # rerun
+    parser_rerun = subparsers.add_parser("rerun", help="Rerun a task by resetting it to PENDING (creates a new attempt on next tick)")
+    parser_rerun.add_argument("run_id", help="Run ID")
+    parser_rerun.add_argument("task_id", help="Task ID")
+    parser_rerun.add_argument("--recursive", action="store_true", help="Include dependent tasks")
+    parser_rerun.add_argument("--force", action="store_true", help="Skip confirmation prompt / force cancel active attempt")
+    parser_rerun.set_defaults(func=cmd_rerun)
+
+    # attempts
+    parser_attempts = subparsers.add_parser("attempts", help="List attempts for a task (TSV)")
+    parser_attempts.add_argument("run_id", help="Run ID")
+    parser_attempts.add_argument("task_id", help="Task ID")
+    parser_attempts.set_defaults(func=cmd_attempts)
+
+    # cancel-attempt
+    parser_cancel_attempt = subparsers.add_parser("cancel-attempt", help="Cancel an attempt safely (DB state; backend cancel best-effort)")
+    parser_cancel_attempt.add_argument("run_id", help="Run ID")
+    parser_cancel_attempt.add_argument("attempt_id", help="Attempt ID")
+    parser_cancel_attempt.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+    parser_cancel_attempt.set_defaults(func=cmd_cancel_attempt)
+
+    # reset-run
+    parser_reset = subparsers.add_parser("reset-run", help="Reset or delete tasks in a run")
+    parser_reset.add_argument("run_id", help="Run ID")
+    parser_reset.add_argument("task_id", help="Target Task ID")
+    parser_reset.add_argument("--action", choices=["reset", "delete"], default="reset", help="Action to perform (reset to PENDING or delete)")
+    parser_reset.add_argument("--recursive", action="store_true", help="Include dependent tasks")
+    parser_reset.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+    parser_reset.set_defaults(func=cmd_reset)
 
     args = parser.parse_args()
     

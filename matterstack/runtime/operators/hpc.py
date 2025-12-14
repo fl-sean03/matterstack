@@ -1,30 +1,169 @@
 from __future__ import annotations
-import asyncio
-import json
-import uuid
-import logging
-from pathlib import Path
-from typing import Any, Dict, Optional, List
 
+import asyncio
+import hashlib
+import json
+import logging
+import uuid
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from matterstack.core.backend import ComputeBackend, JobState
 from matterstack.core.operators import (
-    Operator,
     ExternalRunHandle,
     ExternalRunStatus,
-    OperatorResult
+    Operator,
+    OperatorResult,
 )
 from matterstack.core.run import RunHandle
 from matterstack.core.workflow import Task
-from matterstack.core.backend import ComputeBackend, JobState
-from matterstack.runtime.fs_safety import operator_run_dir
+from matterstack.runtime.fs_safety import attempt_evidence_dir, operator_run_dir
+from matterstack.storage.state_store import SQLiteStateStore
 
 logger = logging.getLogger(__name__)
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _compute_combined_config_hash(
+    *,
+    files_meta: List[Dict[str, Any]],
+    missing_meta: List[Dict[str, Any]],
+) -> str:
+    """
+    Deterministic combined hash over snapshot contents.
+
+    Rules:
+    - Per-file sha256 is computed over raw bytes.
+    - Combined hash is sha256 over stable, sorted lines derived from snapshot metadata.
+    """
+    lines: List[str] = []
+
+    for f in sorted(files_meta, key=lambda x: str(x.get("snapshot_path", ""))):
+        lines.append(
+            "FILE\t"
+            + str(f.get("snapshot_path", ""))
+            + "\t"
+            + str(f.get("sha256", ""))
+            + "\t"
+            + str(f.get("size_bytes", ""))
+            + "\n"
+        )
+
+    for m in sorted(missing_meta, key=lambda x: str(x.get("snapshot_path", ""))):
+        lines.append(
+            "MISSING\t"
+            + str(m.get("snapshot_path", ""))
+            + "\t"
+            + str(m.get("source", ""))
+            + "\n"
+        )
+
+    return _sha256_bytes("".join(lines).encode("utf-8"))
+
+
+def _write_attempt_config_snapshot(run_root: Path, attempt_dir: Path) -> Dict[str, Any]:
+    """
+    Create attempt-scoped config snapshot directory and compute deterministic config_hash.
+
+    Snapshot directory:
+        <attempt_dir>/config_snapshot/
+
+    Files (best-effort; missing does not fail):
+    - run_root/config.json              -> config.json
+    - run_root/campaign_state.json      -> campaign_state.json
+    - attempt_dir/manifest.json         -> task_manifest.json
+
+    Writes:
+    - config_snapshot/manifest.json (hash manifest)
+    """
+    snapshot_dir = attempt_dir / "config_snapshot"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    expected = [
+        (
+            "config.json",
+            run_root / "config.json",
+            "run_root/config.json",
+        ),
+        (
+            "campaign_state.json",
+            run_root / "campaign_state.json",
+            "run_root/campaign_state.json",
+        ),
+        (
+            "task_manifest.json",
+            attempt_dir / "manifest.json",
+            "attempt/manifest.json",
+        ),
+    ]
+
+    files_meta: List[Dict[str, Any]] = []
+    missing_meta: List[Dict[str, Any]] = []
+
+    for snapshot_name, src_path, src_label in expected:
+        if src_path.exists() and src_path.is_file():
+            data = src_path.read_bytes()
+            dest_path = snapshot_dir / snapshot_name
+            dest_path.write_bytes(data)
+
+            files_meta.append(
+                {
+                    "snapshot_path": snapshot_name,
+                    "source": src_label,
+                    "sha256": _sha256_bytes(data),
+                    "size_bytes": len(data),
+                }
+            )
+        else:
+            missing_meta.append(
+                {
+                    "snapshot_path": snapshot_name,
+                    "source": src_label,
+                }
+            )
+
+    combined_hash = _compute_combined_config_hash(files_meta=files_meta, missing_meta=missing_meta)
+
+    hash_manifest = {
+        "spec_version": 1,
+        "files": files_meta,
+        "missing": missing_meta,
+        "combined_hash": combined_hash,
+    }
+    (snapshot_dir / "manifest.json").write_text(
+        json.dumps(hash_manifest, indent=2, sort_keys=True) + "\n"
+    )
+
+    # This is what we persist in DB (small metadata only; no blobs).
+    return {
+        "config_hash": combined_hash,
+        "config_snapshot": {
+            "spec_version": 1,
+            "relative_dir": "config_snapshot",
+            "manifest_file": "config_snapshot/manifest.json",
+            "files": files_meta,
+            "missing": missing_meta,
+        },
+    }
+
 
 class ComputeOperator(Operator):
     """
     Generic Operator that submits tasks to a ComputeBackend (Local, Slurm, etc.).
+
+    v0.2.5 attempt-awareness:
+    - If an attempt context can be discovered for the task, evidence is written under:
+        runs/<run_id>/tasks/<task_id>/attempts/<attempt_id>/
+    - Otherwise, we fall back to the legacy operator directory layout:
+        runs/<run_id>/operators/<slug>/<operator_uuid>/
     """
 
-    def __init__(self, backend: ComputeBackend, slug: str = "compute", operator_name: str = "DirectHPC"):
+    def __init__(
+        self, backend: ComputeBackend, slug: str = "compute", operator_name: str = "DirectHPC"
+    ):
         self.backend = backend
         self.slug = slug
         self.operator_name = operator_name
@@ -32,42 +171,113 @@ class ComputeOperator(Operator):
     def prepare_run(self, run: RunHandle, task: Any) -> ExternalRunHandle:
         """
         Prepare the execution environment.
-        
-        Creates: runs/<run_id>/operators/<slug>/<ext_uuid>/
-        Writes: manifest.json
+
+        Attempt-aware layout (preferred):
+            runs/<run_id>/tasks/<task_id>/attempts/<attempt_id>/
+            Writes: manifest.json
+
+        Legacy fallback (no attempt context available):
+            runs/<run_id>/operators/<slug>/<operator_uuid>/
+            Writes: manifest.json
         """
         if not isinstance(task, Task):
             raise TypeError(f"ComputeOperator expects a Task object, got {type(task)}")
 
-        # Generate a unique ID for this operator execution instance
-        operator_uuid = str(uuid.uuid4())
-        
-        # Define the local path for this operator's data
-        # Structure: <run_root>/operators/<slug>/<operator_uuid>
-        full_path = operator_run_dir(run.root_path, self.slug, operator_uuid)
+        # Best-effort: discover attempt_id (created just before dispatch in the orchestrator)
+        attempt_id: Optional[str] = None
+        store: Optional[SQLiteStateStore] = None
+        try:
+            store = SQLiteStateStore(run.db_path)
+            attempt = store.get_current_attempt(task.task_id)
+            if attempt is not None:
+                attempt_id = attempt.attempt_id
+        except Exception as e:
+            # Back-compat: do not fail prepare_run if state store is unavailable
+            logger.debug(f"Could not resolve attempt_id for task {task.task_id}: {e}")
+
+        operator_uuid: Optional[str] = None
+
+        if attempt_id:
+            full_path = attempt_evidence_dir(run.root_path, task.task_id, attempt_id)
+        else:
+            # Legacy behavior: unique operator instance dir
+            operator_uuid = str(uuid.uuid4())
+            full_path = operator_run_dir(run.root_path, self.slug, operator_uuid)
+
         relative_path = full_path.relative_to(run.root_path.resolve())
-        
+
         # Create directory
         full_path.mkdir(parents=True, exist_ok=True)
-        
+
         # Serialize task to manifest.json for persistence/debugging
         manifest_path = full_path / "manifest.json"
-        with open(manifest_path, "w") as f:
-            f.write(task.model_dump_json(indent=2))
-            
+        manifest_path.write_text(task.model_dump_json(indent=2))
+
+        # v0.2.5: attempt-scoped config snapshot + deterministic hash (attempt-only)
+        if attempt_id:
+            try:
+                snapshot_meta = _write_attempt_config_snapshot(run.root_path, full_path)
+
+                # Ensure hash surfaces in CLI + evidence export (via attempt.operator_data)
+                # and persists through orchestrator update_attempt(ext_handle.operator_data).
+                operator_data_update = {
+                    "config_hash": snapshot_meta["config_hash"],
+                    "config_snapshot": snapshot_meta["config_snapshot"],
+                }
+
+                # Best-effort: persist into DB immediately (useful for direct operator usage)
+                # without relying on orchestrator timing.
+                try:
+                    if store is None:
+                        store = SQLiteStateStore(run.db_path)
+                    current = store.get_attempt(attempt_id)
+                    existing = (
+                        current.operator_data
+                        if current is not None and isinstance(current.operator_data, dict)
+                        else {}
+                    )
+                    new_operator_data = dict(existing)
+                    new_operator_data.update(operator_data_update)
+                    store.update_attempt(attempt_id, operator_data=new_operator_data)
+                except Exception as e:
+                    logger.debug(f"Could not persist config snapshot metadata for attempt {attempt_id}: {e}")
+
+            except Exception as e:
+                # Best-effort only: snapshotting must not fail prepare_run
+                logger.debug(f"Could not create config snapshot for attempt {attempt_id}: {e}")
+                operator_data_update = {}
+
+        else:
+            operator_data_update = {}
+
+        # Determine remote workspace path logic
+        remote_workdir = None
+        if hasattr(self.backend, "workspace_root"):
+            root = str(self.backend.workspace_root).rstrip("/")
+            remote_workdir = f"{root}/{run.workspace_slug}/{run.run_id}/{task.task_id}"
+            if attempt_id:
+                remote_workdir = f"{remote_workdir}/{attempt_id}"
+
         # Create handle
+        operator_data: Dict[str, Any] = {
+            "task_dump": task.model_dump(mode="json"),  # Store task data for submit()
+            "absolute_path": str(full_path),
+            "remote_workdir": remote_workdir,
+            **operator_data_update,
+        }
+        if operator_uuid:
+            operator_data["operator_uuid"] = operator_uuid
+        if attempt_id:
+            operator_data["attempt_id"] = attempt_id
+
         handle = ExternalRunHandle(
             task_id=task.task_id,
             operator_type=self.operator_name,
             status=ExternalRunStatus.CREATED,
-            operator_data={
-                "operator_uuid": operator_uuid,
-                "task_dump": task.model_dump(mode='json'), # Store task data for submit()
-                "absolute_path": str(full_path)
-            },
-            relative_path=relative_path
+            operator_data=operator_data,
+            relative_path=relative_path,
         )
-        
+
         logger.info(f"Prepared {self.slug} run for task {task.task_id} at {relative_path}")
         return handle
 
@@ -76,33 +286,60 @@ class ComputeOperator(Operator):
         Submit the work to the external system via Backend.
         """
         if handle.status != ExternalRunStatus.CREATED:
-            logger.warning(f"Submit called on handle with status {handle.status}, expected CREATED.")
-            # If already submitted, maybe just return? Or fail? 
+            logger.warning(
+                f"Submit called on handle with status {handle.status}, expected CREATED."
+            )
             # For robustness, if it's already SUBMITTED or RUNNING, we assume it's done.
             if handle.status in [ExternalRunStatus.SUBMITTED, ExternalRunStatus.RUNNING]:
                 return handle
-        
+
         # Reconstruct Task from operator_data
         task_data = handle.operator_data.get("task_dump")
         if not task_data:
             raise ValueError("Task data missing from operator handle.")
-        
+
         task = Task.model_validate(task_data)
-        
+
         # Submit to backend (async call wrapped in sync)
         try:
-            job_id = asyncio.run(self.backend.submit(task))
-            
+            # For LocalBackend, we want the task to execute inside the local attempt evidence directory
+            # (or legacy operator dir) rather than a synthesized "remote-like" path.
+            #
+            # For SlurmBackend (SSH), we still use remote_workdir for remote workspace placement.
+            remote_dir = handle.operator_data.get("remote_workdir")
+            local_debug_dir = None
+            abs_path_str = handle.operator_data.get("absolute_path")
+            if abs_path_str:
+                local_debug_dir = Path(abs_path_str)
+
+            workdir_override = remote_dir
+            try:
+                from matterstack.runtime.backends.local import LocalBackend
+
+                if isinstance(self.backend, LocalBackend) and abs_path_str:
+                    workdir_override = abs_path_str
+            except Exception:
+                # Defensive: do not fail submission if backend type checks cannot be performed
+                workdir_override = remote_dir
+
+            job_id = asyncio.run(
+                self.backend.submit(
+                    task,
+                    workdir_override=workdir_override,
+                    local_debug_dir=local_debug_dir,
+                )
+            )
+
             # Update handle
             handle.external_id = job_id
             handle.status = ExternalRunStatus.SUBMITTED
             logger.info(f"Submitted task {handle.task_id} to backend. Job ID: {job_id}")
-            
+
         except Exception as e:
             logger.error(f"Failed to submit task {handle.task_id}: {e}")
             handle.status = ExternalRunStatus.FAILED
             handle.operator_data["error"] = str(e)
-            
+
         return handle
 
     def check_status(self, handle: ExternalRunHandle) -> ExternalRunHandle:
@@ -216,9 +453,47 @@ class ComputeOperator(Operator):
         
         if handle.external_id:
             try:
-                # Download everything to the operator dir
-                # Backend.download(job_id, ".", local_path)
-                asyncio.run(self.backend.download(handle.external_id, ".", str(local_dir)))
+                # Get download patterns from task
+                task_data = handle.operator_data.get("task_dump")
+                include_patterns = None
+                exclude_patterns = None
+                
+                if task_data:
+                    # We could reconstruct Task object, but direct dict access is faster/safer if we just need this field
+                    # and avoids full validation overhead if schema evolved.
+                    # But using model_validate is safer for types.
+                    # Since we are in collect_results, let's just peek into dict.
+                    patterns = task_data.get("download_patterns")
+                    if patterns:
+                        include_patterns = patterns.get("include")
+                        exclude_patterns = patterns.get("exclude")
+
+                # Download everything to the operator dir with filtering.
+                #
+                # v0.2.5 attempt-awareness + LocalBackend:
+                # - submit() executes in `absolute_path` (attempt evidence dir) when using LocalBackend
+                # - remote_workdir is a remote-oriented path hint and may not exist locally
+                remote_workdir = handle.operator_data.get("remote_workdir")
+
+                workdir_override = remote_workdir
+                try:
+                    from matterstack.runtime.backends.local import LocalBackend
+
+                    if isinstance(self.backend, LocalBackend) and path_str:
+                        workdir_override = path_str
+                except Exception:
+                    workdir_override = remote_workdir
+
+                asyncio.run(
+                    self.backend.download(
+                        handle.external_id,
+                        ".",
+                        str(local_dir),
+                        include_patterns=include_patterns,
+                        exclude_patterns=exclude_patterns,
+                        workdir_override=workdir_override,
+                    )
+                )
                 
                 # List files
                 for f in local_dir.rglob("*"):

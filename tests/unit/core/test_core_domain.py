@@ -84,7 +84,7 @@ def test_workflow_task_models():
         command="echo hello"
     )
     assert task1.task_id is not None  # UUID generated
-    assert task1.cores == 1
+    assert task1.cores is None
     
     task2 = Task(
         image="python:3.9",

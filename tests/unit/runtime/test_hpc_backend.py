@@ -44,6 +44,61 @@ async def test_submit_job(backend, mock_ssh):
     assert "#SBATCH --job-name=job1" in script
     assert "echo hello" in script
 
+
+@pytest.mark.asyncio
+async def test_submit_job_workdir_override_and_local_debug_dir(backend, mock_ssh, tmp_path):
+    task = Task(
+        task_id="job1",
+        command="echo hello",
+        image="",
+        cores=1,
+        memory_gb=1,
+        time_limit_minutes=10,
+        files={"input.txt": "data"},
+    )
+
+    attempt_workdir_1 = "/scratch/test/job1/attempt-001"
+    local_debug_dir_1 = tmp_path / "attempt-001"
+
+    job_id_1 = await backend.submit(
+        task,
+        workdir_override=attempt_workdir_1,
+        local_debug_dir=local_debug_dir_1,
+    )
+    assert job_id_1 == "1000"
+
+    # Remote paths should be rooted at the attempt-scoped workdir_override.
+    assert f"{attempt_workdir_1}/submit.sh" in mock_ssh.files
+    assert f"{attempt_workdir_1}/input.txt" in mock_ssh.files
+
+    # sbatch should be run with cwd set to the attempt-scoped workspace.
+    assert f"[cwd={attempt_workdir_1}] sbatch submit.sh" in mock_ssh.cmds_executed
+
+    # submit.sh should be persisted locally into the attempt-scoped local_debug_dir.
+    local_submit_1 = local_debug_dir_1 / "submit.sh"
+    assert local_submit_1.exists()
+    assert local_submit_1.read_text() == mock_ssh.files[f"{attempt_workdir_1}/submit.sh"].decode()
+
+    # A second attempt must not overwrite the first attempt's local evidence (distinct dirs).
+    attempt_workdir_2 = "/scratch/test/job1/attempt-002"
+    local_debug_dir_2 = tmp_path / "attempt-002"
+
+    job_id_2 = await backend.submit(
+        task,
+        workdir_override=attempt_workdir_2,
+        local_debug_dir=local_debug_dir_2,
+    )
+    assert job_id_2 == "1001"
+
+    local_submit_2 = local_debug_dir_2 / "submit.sh"
+    assert local_submit_2.exists()
+    assert local_submit_2.read_text() == mock_ssh.files[f"{attempt_workdir_2}/submit.sh"].decode()
+
+    # Ensure attempt-001 file is still present and unchanged.
+    assert local_submit_1.exists()
+    assert local_submit_1.read_text() == mock_ssh.files[f"{attempt_workdir_1}/submit.sh"].decode()
+
+
 @pytest.mark.asyncio
 async def test_poll_job(backend, mock_ssh):
     # Setup job in mock
@@ -81,11 +136,36 @@ async def test_get_logs(backend, mock_ssh):
 async def test_download(backend, mock_ssh, tmp_path):
     # Setup remote file
     mock_ssh.files["/scratch/test/job1/output.dat"] = b"result data"
-    
+
     local_dest = tmp_path / "output.dat"
-    
-    # backend.download uses full remote path relative to workspace/task_id
-    await backend.download("job1", "output.dat", str(local_dest))
-    
+
+    # Ensure backend.download accepts the interface keyword `job_id=`.
+    await backend.download(job_id="job1", remote_path="output.dat", local_path=str(local_dest))
+
     assert local_dest.exists()
     assert local_dest.read_text() == "result data"
+
+
+@pytest.mark.asyncio
+async def test_download_workdir_override_and_filtering(backend, mock_ssh, tmp_path):
+    attempt_workdir = "/scratch/test/job1/attempt-001"
+
+    # Remote tree under attempt-scoped workdir.
+    mock_ssh.files[f"{attempt_workdir}/results/a.json"] = b'{"a": 1}'
+    mock_ssh.files[f"{attempt_workdir}/results/b.txt"] = b"exclude me"
+    mock_ssh.files[f"{attempt_workdir}/logs/run.log"] = b"not included"
+
+    local_dest = tmp_path / "dl"
+    await backend.download(
+        job_id="job1",
+        remote_path=".",
+        local_path=str(local_dest),
+        include_patterns=["results/*"],
+        exclude_patterns=["results/*.txt"],
+        workdir_override=attempt_workdir,
+    )
+
+    assert (local_dest / "results" / "a.json").exists()
+    assert (local_dest / "results" / "a.json").read_text() == '{"a": 1}'
+    assert not (local_dest / "results" / "b.txt").exists()
+    assert not (local_dest / "logs" / "run.log").exists()

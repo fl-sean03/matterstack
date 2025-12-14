@@ -8,21 +8,24 @@ from pathlib import Path
 def calculate_properties(candidate_id, doping_level, dopant):
     # Simulate computation time
     time.sleep(0.01)
-    
-    # Introduce random failure (~10%)
-    if random.random() < 0.1:
+
+    # Deterministic RNG: makes the demo reproducible and avoids flakey "all candidates failed" runs.
+    rng = random.Random(f"{candidate_id}:{doping_level}:{dopant}")
+
+    # Introduce deterministic failure (~10%)
+    if rng.random() < 0.1:
         print(f"Error: Simulation failed for candidate {candidate_id} due to numerical instability.")
         sys.exit(1)
-    
+
     # Mock physics calculation
     base_energy = -5.0
     # Doping affects energy
-    e_form = base_energy + (doping_level * 0.5) + random.uniform(-0.1, 0.1)
-    
+    e_form = base_energy + (doping_level * 0.5) + rng.uniform(-0.1, 0.1)
+
     # Mock voltage calculation
     base_voltage = 3.5
-    voltage = base_voltage - (doping_level * 0.2) + random.uniform(-0.05, 0.05)
-    
+    voltage = base_voltage - (doping_level * 0.2) + rng.uniform(-0.05, 0.05)
+
     return {
         "candidate_id": candidate_id,
         "doping_level": doping_level,

@@ -50,24 +50,49 @@ def ensure_under_run_root(run_root: Path, target: Path) -> Path:
 def operator_run_dir(run_root: Path, operator_type: str, uuid: str) -> Path:
     """
     Construct and validate a safe directory path for an operator instance.
-    
+
     Args:
         run_root: The root directory of the run.
         operator_type: The type of operator (e.g., "human", "hpc").
         uuid: The unique identifier for this operator instance.
-        
+
     Returns:
         The absolute path to the operator's directory.
     """
     # Sanitize inputs
-    op_type_clean = "".join(c for c in operator_type.lower() if c.isalnum() or c in "_-")
+    op_type_clean = "".join(
+        c for c in operator_type.lower() if c.isalnum() or c in "_-"
+    )
     uuid_clean = "".join(c for c in uuid if c.isalnum() or c in "-")
-    
+
     # Construct relative path
     relative_path = Path("operators") / op_type_clean / uuid_clean
-    
+
     # Construct full path
     full_path = run_root / relative_path
-    
+
     # Verify safety (though construction is safe, we double check)
+    return ensure_under_run_root(run_root, full_path)
+
+
+def attempt_evidence_dir(run_root: Path, task_id: str, attempt_id: str) -> Path:
+    """
+    Construct and validate a safe, attempt-scoped evidence directory.
+
+    Layout (relative to run root):
+        tasks/<task_id>/attempts/<attempt_id>/
+
+    Args:
+        run_root: The root directory of the run (runs/<run_id>/).
+        task_id: Logical task identifier.
+        attempt_id: Attempt UUID (or other orchestrator-generated attempt identifier).
+
+    Returns:
+        The absolute path to the attempt's evidence directory.
+    """
+    task_clean = "".join(c for c in task_id if c.isalnum() or c in "_-")
+    attempt_clean = "".join(c for c in attempt_id if c.isalnum() or c in "_-")
+
+    relative_path = Path("tasks") / task_clean / "attempts" / attempt_clean
+    full_path = run_root / relative_path
     return ensure_under_run_root(run_root, full_path)

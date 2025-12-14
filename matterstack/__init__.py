@@ -1,4 +1,4 @@
-__version__ = "0.2.3"
+__version__ = "0.2.5"
 
 from matterstack.core.campaign import Campaign
 from matterstack.core.workflow import Task, Workflow
