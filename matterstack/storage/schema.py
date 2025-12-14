@@ -143,6 +143,11 @@ class TaskAttemptModel(Base):
 
     status: Mapped[str] = mapped_column(String, nullable=False)
 
+    # v0.2.6+ canonical routing key (e.g. "hpc.default", "human.default")
+    # Persisted for provenance and CLI/evidence stability, even if operator_type later
+    # transitions to legacy values like "HPC"/"Local" during operator status updates.
+    operator_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     operator_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     external_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     operator_data: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+from matterstack.config.operator_wiring import load_wiring_provenance_from_run_root
 from matterstack.core.evidence import EvidenceBundle
+from matterstack.core.operator_keys import resolve_operator_key_for_attempt
 from matterstack.core.run import RunHandle
 
 if TYPE_CHECKING:
@@ -27,12 +30,16 @@ def _attempt_to_dict(attempt: "TaskAttemptModel", run_root: Path) -> Dict[str, A
     artifact_path = (run_root / rel) if rel else None
     artifact_missing = bool(artifact_path and not artifact_path.exists())
 
+    resolved = resolve_operator_key_for_attempt(attempt)
+    operator_key = resolved.operator_key if resolved else None
+
     return {
         "attempt_id": attempt.attempt_id,
         "attempt_index": attempt.attempt_index,
         "status": attempt.status,
         "status_reason": attempt.status_reason,
         "operator_type": attempt.operator_type,
+        "operator_key": operator_key,
         "external_id": attempt.external_id,
         "operator_data": attempt.operator_data,
         "relative_path": str(rel) if rel else None,
@@ -100,6 +107,8 @@ def build_evidence_bundle(run_handle: RunHandle, store: "SQLiteStateStore") -> E
             status_val = current_attempt.status
             task_info["status"] = status_val
             task_info["operator_type"] = current_attempt.operator_type
+            resolved_ok = resolve_operator_key_for_attempt(current_attempt)
+            task_info["operator_key"] = resolved_ok.operator_key if resolved_ok else None
             task_info["external_id"] = current_attempt.external_id
             task_info["results"] = current_attempt.operator_data
 
@@ -168,6 +177,26 @@ def build_evidence_bundle(run_handle: RunHandle, store: "SQLiteStateStore") -> E
 
         tasks_data[task.task_id] = task_info
 
+    # --- v0.2.7: run-level operator wiring provenance (best-effort, backward compatible) ---
+    prov = load_wiring_provenance_from_run_root(run_handle.root_path)
+    operator_wiring: Dict[str, Any]
+    if prov is None:
+        operator_wiring = {
+            "source": "UNKNOWN",
+            "sha256": None,
+            "snapshot_relpath": None,
+            "resolved_path": None,
+            "created_at_utc": None,
+        }
+    else:
+        operator_wiring = {
+            "source": prov.source,
+            "sha256": prov.sha256,
+            "snapshot_relpath": prov.snapshot_relpath,
+            "resolved_path": prov.resolved_path,
+            "created_at_utc": prov.created_at_utc,
+        }
+
     # Construct Bundle
     bundle = EvidenceBundle(
         run_id=run_handle.run_id,
@@ -176,7 +205,7 @@ def build_evidence_bundle(run_handle: RunHandle, store: "SQLiteStateStore") -> E
         status_reason=status_reason,
         is_complete=is_complete,
         task_counts=task_counts,
-        data={"tasks": tasks_data},
+        data={"tasks": tasks_data, "operator_wiring": operator_wiring},
         artifacts=artifacts,
         tags=list(run_meta.tags.keys()) if run_meta.tags else [],
     )
@@ -193,7 +222,17 @@ def export_evidence_bundle(bundle: EvidenceBundle, run_root: Path) -> None:
     """
     evidence_dir = run_root / "evidence"
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    # --- v0.2.7: copy operator wiring snapshot artifacts into evidence export (best-effort) ---
+    snap_src_dir = run_root / "operators_snapshot"
+    snap_dst_dir = evidence_dir / "operators_snapshot"
+    if snap_src_dir.is_dir():
+        snap_dst_dir.mkdir(parents=True, exist_ok=True)
+        for name in ["operators.yaml", "metadata.json", "history.jsonl"]:
+            src = snap_src_dir / name
+            if src.is_file():
+                shutil.copy2(src, snap_dst_dir / name)
+
     # 1. Export JSON
     json_path = evidence_dir / "bundle.json"
     with json_path.open("w") as f:
@@ -201,13 +240,13 @@ def export_evidence_bundle(bundle: EvidenceBundle, run_root: Path) -> None:
         
     # 2. Generate Markdown Report
     report_path = evidence_dir / "report.md"
-    report_content = _generate_markdown_report(bundle)
+    report_content = _generate_markdown_report(bundle, run_root=run_root)
     report_path.write_text(report_content)
     
     # Update bundle with report content (optional, but good for completeness if re-used)
     bundle.report_content = report_content
 
-def _generate_markdown_report(bundle: EvidenceBundle) -> str:
+def _generate_markdown_report(bundle: EvidenceBundle, *, run_root: Optional[Path] = None) -> str:
     """Helper to generate MD content."""
     lines = []
     lines.append(f"# Evidence Report: Run {bundle.run_id}")
@@ -219,7 +258,30 @@ def _generate_markdown_report(bundle: EvidenceBundle) -> str:
     lines.append(f"**Status:** {status_icon} {bundle.run_status}")
     if bundle.status_reason:
         lines.append(f"**Reason:** {bundle.status_reason}")
-        
+
+    # --- v0.2.7: operator wiring provenance (from bundle.json data) ---
+    ow = (bundle.data or {}).get("operator_wiring") if isinstance(bundle.data, dict) else None
+    if isinstance(ow, dict):
+        lines.append("")
+        lines.append("## Operator Wiring")
+        lines.append(f"- **source**: `{ow.get('source')}`")
+        if ow.get("sha256"):
+            lines.append(f"- **sha256**: `{ow.get('sha256')}`")
+        if ow.get("snapshot_relpath"):
+            lines.append(f"- **snapshot_relpath**: `{ow.get('snapshot_relpath')}`")
+        if ow.get("resolved_path"):
+            lines.append(f"- **resolved_path**: `{ow.get('resolved_path')}`")
+        if ow.get("created_at_utc"):
+            lines.append(f"- **created_at_utc**: `{ow.get('created_at_utc')}`")
+
+        # Mention evidence copy locations (required by E2E assertions).
+        if run_root is not None and (run_root / "operators_snapshot").is_dir():
+            lines.append("")
+            lines.append("Copied into this evidence export under:")
+            lines.append("- `operators_snapshot/operators.yaml`")
+            lines.append("- `operators_snapshot/metadata.json`")
+            lines.append("- `operators_snapshot/history.jsonl` (if present)")
+
     # Stats
     counts = bundle.task_counts
     lines.append(f"**Progress:** {counts.get('completed', 0)}/{counts.get('total', 0)} Tasks Completed ({counts.get('failed', 0)} Failed)")

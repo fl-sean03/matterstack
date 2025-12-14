@@ -14,8 +14,9 @@ from matterstack.core.operators import (
 )
 from matterstack.core.run import RunHandle
 from matterstack.core.workflow import Task
-from matterstack.runtime.fs_safety import operator_run_dir, ensure_under_run_root
+from matterstack.runtime.fs_safety import attempt_evidence_dir, operator_run_dir
 from matterstack.runtime.manifests import HumanResponseManifest, ExternalStatus
+from matterstack.storage.state_store import SQLiteStateStore
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +30,36 @@ class HumanOperator(Operator):
     def prepare_run(self, run: RunHandle, task: Any) -> ExternalRunHandle:
         """
         Prepare the execution environment (directories, instructions).
+
+        Attempt-aware layout (preferred):
+            runs/<run_id>/tasks/<task_id>/attempts/<attempt_id>/
+
+        Legacy fallback:
+            runs/<run_id>/operators/human/<uuid>/
         """
         if not isinstance(task, Task):
             raise TypeError(f"HumanOperator expects a Task object, got {type(task)}")
 
+        # Best-effort: discover attempt_id (created just before dispatch in the orchestrator)
+        attempt_id: Optional[str] = None
+        try:
+            store = SQLiteStateStore(run.db_path)
+            attempt = store.get_current_attempt(task.task_id)
+            if attempt is not None:
+                attempt_id = attempt.attempt_id
+        except Exception as e:
+            logger.debug(f"Could not resolve attempt_id for task {task.task_id}: {e}")
+
         operator_uuid = str(uuid.uuid4())
-        
-        # Use fs_safety to get a safe path
-        full_path = operator_run_dir(run.root_path, "human", operator_uuid)
+
+        if attempt_id:
+            full_path = attempt_evidence_dir(run.root_path, task.task_id, attempt_id)
+        else:
+            # Legacy behavior: unique operator instance dir
+            full_path = operator_run_dir(run.root_path, "human", operator_uuid)
+
         relative_path = full_path.relative_to(run.root_path.resolve())
-        
+
         # Create directory
         full_path.mkdir(parents=True, exist_ok=True)
         
@@ -87,9 +108,10 @@ class HumanOperator(Operator):
             status=ExternalRunStatus.CREATED,
             operator_data={
                 "operator_uuid": operator_uuid,
-                "absolute_path": str(full_path)
+                "attempt_id": attempt_id,
+                "absolute_path": str(full_path),
             },
-            relative_path=relative_path
+            relative_path=relative_path,
         )
         
         logger.info(f"Prepared Human run for task {task.task_id} at {relative_path}")

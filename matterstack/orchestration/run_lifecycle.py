@@ -13,6 +13,12 @@ from matterstack.core.operators import ExternalRunHandle, ExternalRunStatus
 from matterstack.storage.state_store import SQLiteStateStore
 from matterstack.core.external import ExternalTask
 from matterstack.core.gate import GateTask
+from matterstack.core.operator_keys import (
+    is_canonical_operator_key,
+    legacy_operator_type_to_key,
+    normalize_operator_key,
+    resolve_operator_key_for_attempt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -254,9 +260,41 @@ def step_run(
         attempt_task_ids = store.get_attempt_task_ids(run_handle.run_id)
         active_attempts = store.get_active_attempts(run_handle.run_id)
 
+        def _lookup_operator_for_attempt(attempt) -> Optional[Any]:
+            """
+            Backward-compatible operator lookup.
+
+            Prefer canonical operator_key (v0.2.6+) when present, but fall back to
+            legacy operator_type keys ("HPC", "Human", etc.) for older registries/tests.
+            """
+            candidates: List[str] = []
+
+            resolved = resolve_operator_key_for_attempt(attempt)
+            if resolved is not None and resolved.operator_key:
+                candidates.append(resolved.operator_key)
+
+            if getattr(attempt, "operator_type", None):
+                raw_type = str(attempt.operator_type).strip()
+                if raw_type:
+                    candidates.append(raw_type)
+
+                derived = legacy_operator_type_to_key(raw_type)
+                if derived:
+                    candidates.append(derived)
+
+                lowered = raw_type.lower()
+                if lowered and lowered != raw_type:
+                    candidates.append(lowered)
+
+            for key in candidates:
+                if key in operators:
+                    return operators[key]
+
+            return None
+
         # Poll active attempts (v2)
         for attempt in active_attempts:
-            if not attempt.operator_type:
+            if not attempt.operator_type and not getattr(attempt, "operator_key", None):
                 # "stub" / incomplete attempts won't be polled; we still heal task status below.
                 store.update_task_status(
                     attempt.task_id,
@@ -264,16 +302,14 @@ def step_run(
                 )
                 continue
 
-            op_type = attempt.operator_type
-            if op_type not in operators:
-                # Unknown operator type: skip polling but still heal task status
+            op = _lookup_operator_for_attempt(attempt)
+            if op is None:
+                # Unknown operator wiring for this attempt: skip polling but still heal task status.
                 store.update_task_status(
                     attempt.task_id,
                     _task_status_from_external_status(ExternalRunStatus(attempt.status)),
                 )
                 continue
-
-            op = operators[op_type]
             try:
                 ext_handle = ExternalRunHandle(
                     task_id=attempt.task_id,
@@ -504,6 +540,25 @@ def step_run(
             
         logger.info(f"Concurrency Check: Active={active_external_count}, Limit={max_hpc_jobs}, Slots={slots_available}")
 
+        def _resolve_operator_key_for_dispatch(operator_type: Optional[str]) -> Optional[str]:
+            """
+            Convert a dispatch routing string into a canonical operator_key.
+
+            - If already canonical (e.g. "hpc.default"), normalize it.
+            - Else treat as legacy operator_type (e.g. "Human", "HPC") and map to "*.default".
+            """
+            if not operator_type:
+                return None
+
+            lowered = str(operator_type).strip().lower()
+            if is_canonical_operator_key(lowered):
+                try:
+                    return normalize_operator_key(lowered)
+                except Exception:
+                    return None
+
+            return legacy_operator_type_to_key(operator_type)
+
         # Submit ready tasks (up to limit)
         for task in tasks_to_run:
             # Check environment for explicit operator request
@@ -548,16 +603,37 @@ def step_run(
 
             if operator_type:
                 # v2: Create attempt first, then dispatch to operator
-                logger.info(f"Dispatching to Operator: {operator_type}")
+                canonical_operator_key = _resolve_operator_key_for_dispatch(operator_type)
 
-                if operator_type in operators:
-                    op = operators[operator_type]
+                # Backward-compatible dispatch:
+                # - Prefer canonical operator_key ("hpc.default") when registry is canonical
+                # - Fall back to legacy registry keys ("HPC", "Human", ...)
+                dispatch_candidates: List[str] = []
+                if canonical_operator_key:
+                    dispatch_candidates.append(canonical_operator_key)
+                if operator_type:
+                    dispatch_candidates.append(str(operator_type).strip())
+
+                op = None
+                dispatch_key_used: Optional[str] = None
+                for k in dispatch_candidates:
+                    if k and k in operators:
+                        op = operators[k]
+                        dispatch_key_used = k
+                        break
+
+                if op is not None:
+                    logger.info(
+                        f"Dispatching to Operator: {dispatch_key_used} (requested: {operator_type}, resolved operator_key={canonical_operator_key!r})"
+                    )
+
                     attempt_id: Optional[str] = None
                     try:
                         attempt_id = store.create_attempt(
                             run_id=run_handle.run_id,
                             task_id=task.task_id,
                             operator_type=operator_type,
+                            operator_key=canonical_operator_key,
                             status=ExternalRunStatus.CREATED.value,
                             operator_data={},
                             relative_path=None,
@@ -597,7 +673,9 @@ def step_run(
                         has_active_tasks = True
 
                     except Exception as e:
-                        logger.error(f"Failed to dispatch operator {operator_type}: {e}")
+                        logger.error(
+                            f"Failed to dispatch operator {dispatch_key_used} (requested {operator_type}, resolved operator_key={canonical_operator_key!r}): {e}"
+                        )
                         import traceback
 
                         traceback.print_exc()
@@ -613,7 +691,11 @@ def step_run(
                                 pass
                         store.update_task_status(task.task_id, "FAILED")
                 else:
-                    logger.error(f"Unknown operator type requested: {operator_type}")
+                    logger.error(
+                        f"Unknown operator requested: {operator_type} "
+                        f"(resolved operator_key={canonical_operator_key!r}). "
+                        f"Registry keys={sorted(list(operators.keys()))[:10]}{'...' if len(operators) > 10 else ''}"
+                    )
                     store.update_task_status(task.task_id, "FAILED")
 
             elif isinstance(task, (ExternalTask, GateTask)):

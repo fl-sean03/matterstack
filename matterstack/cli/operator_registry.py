@@ -6,13 +6,17 @@ from typing import Any, Dict, Optional, Union
 
 import yaml
 
+from matterstack.config.operators import load_operators_config
 from matterstack.config.profiles import ExecutionProfile, SlurmProfile, load_profile
+from matterstack.core.operator_keys import split_operator_key
+from matterstack.core.operators import Operator
 from matterstack.core.run import RunHandle
 from matterstack.runtime.backends.hpc.ssh import SSHConfig
 from matterstack.runtime.backends.local import LocalBackend
 from matterstack.runtime.operators.experiment import ExperimentOperator
 from matterstack.runtime.operators.hpc import ComputeOperator
 from matterstack.runtime.operators.human import HumanOperator
+from matterstack.runtime.operators.registry import get_cached_operator_registry_from_operators_config
 
 
 @dataclass(frozen=True)
@@ -21,12 +25,19 @@ class RegistryConfig:
     Configuration inputs for building an operator registry.
 
     Precedence:
-    - If hpc_config_path is provided, it wins for the HPC operator backend.
-    - Else if profile is provided, it is used for the HPC operator backend.
-    - Else HPC operator falls back to LocalBackend (backward compatible).
+    1) If operators_config_path is provided, build registry from operators.yaml (v0.2.6+ operator keys).
+    2) Else if hpc_config_path is provided, it wins for the HPC operator backend.
+    3) Else if profile is provided, it is used for the HPC operator backend.
+    4) Else HPC operator falls back to LocalBackend (backward compatible).
     """
 
+    # Profiles config (for backend.type=profile); also used by legacy profile-based HPC backend.
     config_path: Optional[str] = None
+
+    # v0.2.6+ canonical operators.yaml (typically run snapshot path).
+    operators_config_path: Optional[str] = None
+
+    # Legacy inputs (kept for backward compatibility).
     profile: Optional[str] = None
     hpc_config_path: Optional[str] = None
 
@@ -98,17 +109,63 @@ def _profile_from_hpc_yaml(path: Union[str, Path]) -> ExecutionProfile:
     )
 
 
+def _with_legacy_aliases(reg: Dict[str, Operator]) -> Dict[str, Operator]:
+    """
+    Orchestrator compatibility adapter.
+
+    The orchestrator may route by:
+    - canonical operator_key (e.g. "hpc.default") from task env ("MATTERSTACK_OPERATOR"), AND/OR
+    - legacy operator_type strings ("HPC", "Local", "Human", "Experiment") from default routing
+      and/or operator implementations that report operator_type on handles.
+
+    To keep routing + polling stable, provide both canonical keys and these aliases.
+    """
+    out: Dict[str, Operator] = dict(reg)
+
+    for operator_key, op in reg.items():
+        try:
+            kind, _name = split_operator_key(operator_key)
+        except Exception:
+            # Defensive: if key isn't canonical, just keep it as-is.
+            continue
+
+        if kind == "hpc":
+            out.setdefault("HPC", op)
+            out.setdefault("hpc", op)
+        elif kind == "local":
+            out.setdefault("Local", op)
+            out.setdefault("local", op)
+        elif kind == "human":
+            out.setdefault("Human", op)
+            out.setdefault("human", op)
+        elif kind == "experiment":
+            out.setdefault("Experiment", op)
+            out.setdefault("experiment", op)
+
+    return out
+
+
 def build_operator_registry(
     run_handle: RunHandle,
     *,
     registry_config: RegistryConfig,
 ) -> Dict[str, Any]:
     """
-    Construct operator instances for orchestration, keyed by operator_type strings.
+    Construct operator instances for orchestration.
 
-    Keys MUST match attempt.operator_type values stored in DB and used by orchestrator.
+    Returned mapping keys must match the orchestrator's operator routing strings:
+    - canonical operator keys (preferred): e.g. "hpc.default"
+    - legacy operator types (compat): "HPC", "Local", "Human", "Experiment"
     """
-    # Always keep Local operator rooted at the run root for backward-compatible evidence layout.
+    # v0.2.6+ operator system: build from operators.yaml when available.
+    if registry_config.operators_config_path:
+        ops_cfg = load_operators_config(registry_config.operators_config_path)
+        reg = get_cached_operator_registry_from_operators_config(
+            run_handle, ops_cfg, profiles_config_path=registry_config.config_path
+        )
+        return _with_legacy_aliases(reg)
+
+    # Legacy behavior: keep Local operator rooted at run root for backward-compatible evidence layout.
     local_backend = LocalBackend(workspace_root=str(run_handle.root_path))
 
     # Decide HPC backend (Slurm when configured; else local fallback).

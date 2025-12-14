@@ -157,15 +157,28 @@ def test_catalyst_science(tmp_path):
     stop_event = threading.Event()
     
     def auto_approver():
-        op_dir = handle.root_path / "operators" / "human"
+        legacy_dir = handle.root_path / "operators" / "human"
+        tasks_dir = handle.root_path / "tasks"
+
         while not stop_event.is_set():
-            if op_dir.exists():
-                for d in op_dir.iterdir():
+            # Preferred (v0.2.5+): attempt-scoped evidence dirs for HumanOperator
+            if tasks_dir.exists():
+                for d in tasks_dir.glob("*/attempts/*"):
+                    # Heuristic: HumanOperator writes instructions.md in the work dir
+                    if d.is_dir() and (d / "instructions.md").exists():
+                        resp = d / "response.json"
+                        if not resp.exists():
+                            resp.write_text(
+                                '{"status": "COMPLETED", "data": {"approved": true}}'
+                            )
+
+            # Legacy: operators/human/<uuid>/
+            if legacy_dir.exists():
+                for d in legacy_dir.iterdir():
                     resp = d / "response.json"
                     if d.is_dir() and not resp.exists():
-                        # Create response
-                        with open(resp, "w") as f:
-                            f.write('{"status": "COMPLETED", "data": {"approved": true}}')
+                        resp.write_text('{"status": "COMPLETED", "data": {"approved": true}}')
+
             time.sleep(0.5)
 
     t = threading.Thread(target=auto_approver)

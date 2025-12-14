@@ -63,20 +63,30 @@ def test_catalyst_human_e2e(tmp_path):
     stop_event = threading.Event()
     
     def auto_approver():
-        op_dir = handle.root_path / "operators" / "human"
-        print(f"DEBUG: Watching {op_dir}")
+        legacy_dir = handle.root_path / "operators" / "human"
+        tasks_dir = handle.root_path / "tasks"
+        print(f"DEBUG: Watching {legacy_dir} and {tasks_dir}")
+
         while not stop_event.is_set():
-            if op_dir.exists():
-                for d in op_dir.iterdir():
+            # Preferred (v0.2.5+): attempt-scoped evidence dirs for HumanOperator
+            if tasks_dir.exists():
+                for d in tasks_dir.glob("*/attempts/*"):
+                    if d.is_dir() and (d / "instructions.md").exists():
+                        resp = d / "response.json"
+                        if not resp.exists():
+                            print(f"DEBUG: Creating response in {d}")
+                            resp.write_text(
+                                '{"status": "COMPLETED", "data": {"approved": true}}'
+                            )
+
+            # Legacy: operators/human/<uuid>/
+            if legacy_dir.exists():
+                for d in legacy_dir.iterdir():
                     resp = d / "response.json"
                     if d.is_dir() and not resp.exists():
-                         print(f"DEBUG: Creating response in {d}")
-                         # Create response
-                         with open(resp, "w") as f:
-                             f.write('{"status": "COMPLETED", "data": {"approved": true}}')
-            else:
-                # print(f"DEBUG: {op_dir} does not exist yet")
-                pass
+                        print(f"DEBUG: Creating response in {d}")
+                        resp.write_text('{"status": "COMPLETED", "data": {"approved": true}}')
+
             time.sleep(0.5)
 
     t = threading.Thread(target=auto_approver)

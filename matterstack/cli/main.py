@@ -14,6 +14,7 @@ from matterstack.orchestration.run_lifecycle import (
 )
 from matterstack.storage.state_store import SQLiteStateStore
 from matterstack.storage.export import build_evidence_bundle, export_evidence_bundle
+from matterstack.core.operator_keys import resolve_operator_key_for_attempt
 from matterstack.core.run import RunHandle
 from matterstack.core.campaign import Campaign
 from matterstack.core.workflow import Workflow, Task
@@ -22,6 +23,10 @@ from matterstack.cli.tui import CampaignMonitor
 from matterstack.cli.utils import load_workspace_context, find_run
 from matterstack.cli.reset import cmd_reset, get_dependents
 from matterstack.cli.operator_registry import RegistryConfig, build_operator_registry
+from matterstack.config.operator_wiring import (
+    resolve_operator_wiring,
+    format_operator_wiring_explain_line,
+)
 import tempfile
 import shutil
 
@@ -35,11 +40,30 @@ logger = logging.getLogger("cli")
 def cmd_init(args):
     """
     Initialize a new run.
+
+    Optional: if --operators-config is provided, persist the operator wiring snapshot immediately
+    so the run is ready to resume without re-specifying wiring flags.
     """
     workspace_slug = args.workspace
     try:
+        operators_config = getattr(args, "operators_config", None)
+
+        # Deterministic safety: explicit path must exist (avoid creating a run and then failing).
+        if operators_config:
+            p = Path(operators_config)
+            if not p.is_file():
+                raise FileNotFoundError(f"CLI --operators-config file not found: {p}")
+
         campaign = load_workspace_context(workspace_slug)
         handle = initialize_run(workspace_slug, campaign)
+
+        if operators_config:
+            resolve_operator_wiring(
+                handle,
+                cli_operators_config_path=str(operators_config),
+                force_override=False,
+            )
+
         print(f"Run initialized: {handle.run_id}")
         print(f"Path: {handle.root_path}")
     except Exception as e:
@@ -60,14 +84,24 @@ def cmd_step(args):
     try:
         campaign = load_workspace_context(handle.workspace_slug)
 
-        operator_registry = build_operator_registry(
+        wiring = resolve_operator_wiring(
             handle,
-            registry_config=RegistryConfig(
-                config_path=getattr(args, "config", None),
-                profile=getattr(args, "profile", None),
-                hpc_config_path=getattr(args, "hpc_config", None),
-            ),
+            cli_operators_config_path=getattr(args, "operators_config", None),
+            force_override=bool(getattr(args, "force_wiring_override", False)),
+            legacy_hpc_config_path=getattr(args, "hpc_config", None),
+            legacy_profile=getattr(args, "profile", None),
+            profiles_config_path=getattr(args, "config", None),
         )
+
+        registry_cfg = RegistryConfig(
+            config_path=getattr(args, "config", None),
+            operators_config_path=wiring.snapshot_path,
+            # When a snapshot exists (including legacy-generated), we must not pass legacy flags.
+            profile=None if wiring.snapshot_path else getattr(args, "profile", None),
+            hpc_config_path=None if wiring.snapshot_path else getattr(args, "hpc_config", None),
+        )
+
+        operator_registry = build_operator_registry(handle, registry_config=registry_cfg)
 
         status = step_run(handle, campaign, operator_registry=operator_registry)
         print(f"Run {run_id} step complete. Status: {status}")
@@ -123,14 +157,23 @@ def cmd_loop(args):
         try:
             campaign = load_workspace_context(handle.workspace_slug)
 
-            operator_registry = build_operator_registry(
+            wiring = resolve_operator_wiring(
                 handle,
-                registry_config=RegistryConfig(
-                    config_path=getattr(args, "config", None),
-                    profile=getattr(args, "profile", None),
-                    hpc_config_path=getattr(args, "hpc_config", None),
-                ),
+                cli_operators_config_path=getattr(args, "operators_config", None),
+                force_override=bool(getattr(args, "force_wiring_override", False)),
+                legacy_hpc_config_path=getattr(args, "hpc_config", None),
+                legacy_profile=getattr(args, "profile", None),
+                profiles_config_path=getattr(args, "config", None),
             )
+
+            registry_cfg = RegistryConfig(
+                config_path=getattr(args, "config", None),
+                operators_config_path=wiring.snapshot_path,
+                profile=None if wiring.snapshot_path else getattr(args, "profile", None),
+                hpc_config_path=None if wiring.snapshot_path else getattr(args, "hpc_config", None),
+            )
+
+            operator_registry = build_operator_registry(handle, registry_config=registry_cfg)
 
             run_until_completion(handle, campaign, operator_registry=operator_registry)
         except Exception as e:
@@ -162,14 +205,24 @@ def cmd_loop(args):
                     try:
                         campaign = load_workspace_context(handle.workspace_slug)
 
-                        operator_registry = build_operator_registry(
+                        # Scheduler mode: do NOT apply a global operators-config override across multiple runs.
+                        wiring = resolve_operator_wiring(
                             handle,
-                            registry_config=RegistryConfig(
-                                config_path=getattr(args, "config", None),
-                                profile=getattr(args, "profile", None),
-                                hpc_config_path=getattr(args, "hpc_config", None),
-                            ),
+                            cli_operators_config_path=None,
+                            force_override=False,
+                            legacy_hpc_config_path=getattr(args, "hpc_config", None),
+                            legacy_profile=getattr(args, "profile", None),
+                            profiles_config_path=getattr(args, "config", None),
                         )
+
+                        registry_cfg = RegistryConfig(
+                            config_path=getattr(args, "config", None),
+                            operators_config_path=wiring.snapshot_path,
+                            profile=None if wiring.snapshot_path else getattr(args, "profile", None),
+                            hpc_config_path=None if wiring.snapshot_path else getattr(args, "hpc_config", None),
+                        )
+
+                        operator_registry = build_operator_registry(handle, registry_config=registry_cfg)
 
                         # We use step_run which attempts to lock.
                         status = step_run(handle, campaign, operator_registry=operator_registry)
@@ -401,6 +454,8 @@ def cmd_attempts(args):
         attempts = store.list_attempts(task_id)
 
         # TSV header (stable, parseable)
+        #
+        # Backward-compat: keep the original v0.2.5 7-column format exactly.
         header = [
             "attempt_id",
             "attempt_index",
@@ -537,6 +592,7 @@ def cmd_explain(args):
         
         print(f"Run: {run_id}")
         print(f"Status: {status}")
+        print(format_operator_wiring_explain_line(handle.root_path))
         
         if status in ["COMPLETED", "FAILED", "CANCELLED"]:
             print("Run is terminal. No active blockers.")
@@ -553,6 +609,9 @@ def cmd_explain(args):
             for item in frontier:
                 print(f"\n[Task {item.task_id}] - {item.status}")
                 print(f"  Reason: {item.reason}")
+                op_key = getattr(item, "operator_key", None)
+                if op_key:
+                    print(f"  Operator Key: {op_key}")
                 if item.hint:
                     print(f"  Hint: {item.hint}")
                 if item.path:
@@ -688,6 +747,11 @@ def main():
     # init
     parser_init = subparsers.add_parser("init", help="Initialize a new run")
     parser_init.add_argument("workspace", help="Workspace slug")
+    parser_init.add_argument(
+        "--operators-config",
+        dest="operators_config",
+        help="Path to operators.yaml defining operator instances (v0.2.6 Operator System v2).",
+    )
     parser_init.set_defaults(func=cmd_init)
     
     # step
@@ -696,6 +760,17 @@ def main():
     parser_step.add_argument(
         "--config",
         help="Path to matterstack YAML config file containing execution profiles (optional)",
+    )
+    parser_step.add_argument(
+        "--operators-config",
+        dest="operators_config",
+        help="Path to operators.yaml defining operator instances (v0.2.6 Operator System v2).",
+    )
+    parser_step.add_argument(
+        "--force-wiring-override",
+        dest="force_wiring_override",
+        action="store_true",
+        help="Allow replacing an existing run's persisted operator wiring snapshot when --operators-config is provided.",
     )
     parser_step.add_argument(
         "--profile",
@@ -719,6 +794,17 @@ def main():
     parser_loop.add_argument(
         "--config",
         help="Path to matterstack YAML config file containing execution profiles (optional)",
+    )
+    parser_loop.add_argument(
+        "--operators-config",
+        dest="operators_config",
+        help="Path to operators.yaml defining operator instances (v0.2.6 Operator System v2).",
+    )
+    parser_loop.add_argument(
+        "--force-wiring-override",
+        dest="force_wiring_override",
+        action="store_true",
+        help="Allow replacing an existing run's persisted operator wiring snapshot when --operators-config is provided (single-run mode only).",
     )
     parser_loop.add_argument(
         "--profile",

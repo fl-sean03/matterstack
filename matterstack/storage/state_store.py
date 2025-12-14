@@ -25,7 +25,7 @@ from matterstack.storage.schema import (
     TaskModel,
 )
 
-CURRENT_SCHEMA_VERSION = "2"
+CURRENT_SCHEMA_VERSION = "3"
 
 # Deterministic namespace for v1 -> v2 migration attempt_id backfill.
 # attempt_id = uuid5(namespace, f"{run_id}:{task_id}")
@@ -133,6 +133,24 @@ class SQLiteStateStore:
                 .values(current_attempt_id=attempt_id)
             )
 
+        info.value = "2"
+        session.commit()
+
+    def _migrate_schema_v2_to_v3(self, session: Session, info: SchemaInfo) -> None:
+        """
+        Additive, non-destructive migration from schema v2 -> v3.
+
+        v3 adds `task_attempts.operator_key` (nullable) to persist canonical operator routing keys
+        (e.g. "hpc.default") for provenance and CLI/evidence stability.
+        """
+        logger.info(f"Migrating database schema v2 -> v3 at {self.db_path}")
+
+        # Ensure latest tables exist for *new* DBs (additive; does not add columns on existing tables).
+        Base.metadata.create_all(self.engine)
+
+        if not self._sqlite_table_has_column(session, "task_attempts", "operator_key"):
+            session.execute(text("ALTER TABLE task_attempts ADD COLUMN operator_key VARCHAR"))
+
         info.value = CURRENT_SCHEMA_VERSION
         session.commit()
 
@@ -141,6 +159,11 @@ class SQLiteStateStore:
         Check that the database schema version matches the code.
         If missing, initialize it.
         If mismatch, migrate if supported, else raise error.
+
+        Schema versions:
+        - v1: external_runs only
+        - v2: task_attempts + tasks.current_attempt_id
+        - v3: task_attempts.operator_key (canonical routing key)
         """
         with self.SessionLocal() as session:
             stmt = select(SchemaInfo).where(SchemaInfo.key == "version")
@@ -159,8 +182,16 @@ class SQLiteStateStore:
             if info.value == CURRENT_SCHEMA_VERSION:
                 return
 
-            if info.value == "1" and CURRENT_SCHEMA_VERSION == "2":
+            # Supported additive migrations
+            if info.value == "1" and CURRENT_SCHEMA_VERSION in {"2", "3"}:
                 self._migrate_schema_v1_to_v2(session, info)
+                # If code expects v3, immediately migrate onward.
+                if CURRENT_SCHEMA_VERSION == "3":
+                    self._migrate_schema_v2_to_v3(session, info)
+                return
+
+            if info.value == "2" and CURRENT_SCHEMA_VERSION == "3":
+                self._migrate_schema_v2_to_v3(session, info)
                 return
 
             raise RuntimeError(
@@ -525,6 +556,7 @@ class SQLiteStateStore:
         run_id: str,
         task_id: str,
         operator_type: Optional[str] = None,
+        operator_key: Optional[str] = None,
         status: str = ExternalRunStatus.CREATED.value,
         operator_data: Optional[Dict[str, Any]] = None,
         relative_path: Optional[Path] = None,
@@ -554,6 +586,7 @@ class SQLiteStateStore:
                 run_id=run_id,
                 attempt_index=next_index,
                 status=status,
+                operator_key=operator_key,
                 operator_type=operator_type,
                 external_id=None,
                 operator_data=operator_data or {},
@@ -648,6 +681,7 @@ class SQLiteStateStore:
         *,
         status: Optional[str] = None,
         operator_type: Optional[str] = None,
+        operator_key: Optional[str] = None,
         external_id: Optional[str] = None,
         operator_data: Optional[Dict[str, Any]] = None,
         relative_path: Optional[Path] = None,
@@ -673,6 +707,9 @@ class SQLiteStateStore:
 
             if operator_type is not None:
                 model.operator_type = operator_type
+
+            if operator_key is not None:
+                model.operator_key = operator_key
 
             if external_id is not None:
                 model.external_id = external_id

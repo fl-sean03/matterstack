@@ -1,0 +1,8 @@
+operators:
+  hpc.default:
+    kind: hpc
+    backend:
+      type: local
+      dry_run: true
+  human.default:
+    kind: human
