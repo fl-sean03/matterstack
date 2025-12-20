@@ -10,6 +10,7 @@ from matterstack.core.run import RunHandle
 from matterstack.core.operators import ExternalRunStatus, OperatorResult
 from matterstack.core.backend import ComputeBackend, JobStatus, JobState
 from matterstack.runtime.operators.hpc import ComputeOperator as DirectHPCOperator
+from matterstack.runtime.task_manifest import iter_strings
 from matterstack.storage.state_store import SQLiteStateStore
 
 # --- Mock Backend ---
@@ -189,20 +190,48 @@ def test_check_status(operator, run_handle, simple_task):
 def test_collect_results(operator, run_handle, simple_task):
     handle = operator.prepare_run(run_handle, simple_task)
     handle = operator.submit(handle)
-
+    
     # Add some output files to backend
     job_id = handle.external_id
     operator.backend.add_output_file(job_id, "results.csv", "a,b,c")
-
+    
     # Run collection
     result = operator.collect_results(handle)
-
+    
     assert result.task_id == simple_task.task_id
     assert "results.csv" in result.files
-
+    
     # Verify file content on disk
     full_path = run_handle.root_path / handle.relative_path
     assert (full_path / "results.csv").read_text() == "a,b,c"
+
+
+def test_collect_results_always_ingests_exit_code_even_when_filtered(operator, run_handle):
+    """
+    Regression: HPC attempts must always have an `exit_code` file in the local attempt dir,
+    even if download_patterns.include would omit it.
+    """
+    task = Task(
+        task_id="task_exit_code",
+        image="ubuntu",
+        command="echo hello",
+        download_patterns={"include": ["*.log"]},  # excludes `exit_code` by design
+    )
+
+    handle = operator.prepare_run(run_handle, task)
+    handle = operator.submit(handle)
+    job_id = handle.external_id
+
+    # Remote has exit_code, but the include filter will skip it in the main download.
+    operator.backend.add_output_file(job_id, "exit_code", "0\n")
+    operator.backend.add_output_file(job_id, "stdout.log", "ok\n")
+
+    result = operator.collect_results(handle)
+
+    full_path = run_handle.root_path / handle.relative_path
+    assert (full_path / "exit_code").exists()
+    assert (full_path / "exit_code").read_text().strip() == "0"
+    assert "exit_code" in result.files
 
 def test_idempotent_submit(operator, run_handle, simple_task):
     handle = operator.prepare_run(run_handle, simple_task)
@@ -261,6 +290,38 @@ def test_attempt_scoped_evidence_dirs_and_workdirs_do_not_overwrite(operator, ru
     assert ld1 is not None and ld2 is not None
     assert str(ld1).endswith(f"tasks/{simple_task.task_id}/attempts/{attempt_id_1}")
     assert str(ld2).endswith(f"tasks/{simple_task.task_id}/attempts/{attempt_id_2}")
+
+
+def test_task_manifest_does_not_embed_large_file_contents(operator, run_handle):
+    """
+    Regression test: task/attempt manifest.json should not embed full file contents.
+
+    We reject any single string value exceeding 10k characters.
+    """
+    big_blob = "x" * 20001
+
+    task = Task(
+        task_id="task_big_files",
+        image="ubuntu",
+        command="echo hello",
+        files={
+            # This would have been embedded pre-change when using task.model_dump_json()
+            "big_script.sh": big_blob,
+        },
+    )
+
+    handle = operator.prepare_run(run_handle, task)
+    full_path = run_handle.root_path / handle.relative_path
+
+    manifest = json.loads((full_path / "manifest.json").read_text(encoding="utf-8"))
+
+    # Ensure new schema is in effect and file entry is reference-only.
+    assert manifest.get("schema_version") == 2
+    assert manifest["files"]["big_script.sh"]["path"] == "big_script.sh"
+    assert "content" not in manifest["files"]["big_script.sh"]
+
+    # No huge inline blobs anywhere in the manifest JSON.
+    assert max(len(s) for s in iter_strings(manifest)) <= 10_000
 
 
 def test_attempt_config_snapshot_hash_is_populated_and_stable(operator, run_handle, simple_task):

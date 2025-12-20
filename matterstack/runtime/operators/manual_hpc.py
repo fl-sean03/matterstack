@@ -16,6 +16,7 @@ from matterstack.core.run import RunHandle
 from matterstack.core.workflow import Task
 from matterstack.runtime.fs_safety import operator_run_dir
 from matterstack.runtime.manifests import ManualHPCStatusManifest, ExternalStatus
+from matterstack.runtime.task_manifest import write_task_manifest_json
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +43,9 @@ class ManualHPCOperator(Operator):
         # Create directory
         full_path.mkdir(parents=True, exist_ok=True)
         
-        # 1. Write manifest.json
+        # 1. Write manifest.json (lean; no embedded file contents)
         manifest_path = full_path / "manifest.json"
-        with open(manifest_path, "w") as f:
-            f.write(task.model_dump_json(indent=2))
+        write_task_manifest_json(manifest_path, task)
             
         # 2. Generate job_template.sh
         job_script_path = full_path / "job_template.sh"

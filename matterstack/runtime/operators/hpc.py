@@ -18,6 +18,7 @@ from matterstack.core.operators import (
 from matterstack.core.run import RunHandle
 from matterstack.core.workflow import Task
 from matterstack.runtime.fs_safety import attempt_evidence_dir, operator_run_dir
+from matterstack.runtime.task_manifest import write_task_manifest_json
 from matterstack.storage.state_store import SQLiteStateStore
 
 logger = logging.getLogger(__name__)
@@ -210,8 +211,10 @@ class ComputeOperator(Operator):
         full_path.mkdir(parents=True, exist_ok=True)
 
         # Serialize task to manifest.json for persistence/debugging
+        #
+        # NOTE: Keep this manifest lean (no embedded file contents) to avoid huge/noisy JSON blobs.
         manifest_path = full_path / "manifest.json"
-        manifest_path.write_text(task.model_dump_json(indent=2))
+        write_task_manifest_json(manifest_path, task)
 
         # v0.2.5: attempt-scoped config snapshot + deterministic hash (attempt-only)
         if attempt_id:
@@ -494,7 +497,31 @@ class ComputeOperator(Operator):
                         workdir_override=workdir_override,
                     )
                 )
-                
+
+                # Ensure `exit_code` is always ingested for HPC attempts.
+                #
+                # Rationale:
+                # - users may set download_patterns.include=["*.log"] (or similar)
+                # - then `exit_code` is omitted even if it exists remotely
+                # - we still want a reliable, tiny artifact for attempt completion
+                exit_code_local = local_dir / "exit_code"
+                if not exit_code_local.exists():
+                    try:
+                        asyncio.run(
+                            self.backend.download(
+                                handle.external_id,
+                                "exit_code",
+                                str(local_dir),
+                                include_patterns=None,
+                                exclude_patterns=None,
+                                workdir_override=workdir_override,
+                            )
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            f"Best-effort download of exit_code failed for {handle.task_id}: {e}"
+                        )
+
                 # List files
                 for f in local_dir.rglob("*"):
                     if f.is_file():

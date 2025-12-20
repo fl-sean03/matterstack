@@ -250,11 +250,23 @@ def step_run(
             operators = operator_registry
         else:
             local_backend = LocalBackend(workspace_root=run_handle.root_path)
+            human_op = HumanOperator()
+            experiment_op = ExperimentOperator()
+            local_op = ComputeOperator(backend=local_backend, slug="local", operator_name="Local")
+            hpc_op = ComputeOperator(backend=local_backend, slug="hpc", operator_name="HPC")
+            
+            # Register with both legacy keys and canonical v0.2.6 keys for compatibility
             operators = {
-                "Human": HumanOperator(),
-                "Experiment": ExperimentOperator(),
-                "Local": ComputeOperator(backend=local_backend, slug="local", operator_name="Local"),
-                "HPC": ComputeOperator(backend=local_backend, slug="hpc", operator_name="HPC"),
+                # Legacy keys (v0.2.5 and earlier)
+                "Human": human_op,
+                "Experiment": experiment_op,
+                "Local": local_op,
+                "HPC": hpc_op,
+                # Canonical keys (v0.2.6+)
+                "human.default": human_op,
+                "experiment.default": experiment_op,
+                "local.default": local_op,
+                "hpc.default": hpc_op,
             }
 
         attempt_task_ids = store.get_attempt_task_ids(run_handle.run_id)

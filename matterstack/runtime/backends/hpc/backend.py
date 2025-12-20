@@ -161,6 +161,15 @@ class SlurmBackend(ComputeBackend):
         lines.append("")
         lines.append(f"cd {task_dir}")
         
+        # Always write an exit_code file into the remote task dir.
+        #
+        # We prefer an EXIT trap over wrapping the command so that:
+        # - the file is written even if the command fails
+        # - the script can evolve to use `set -e` without breaking exit_code capture
+        exit_code_path = f"{task_dir}/exit_code"
+        lines.append(f"EXIT_CODE_FILE={shlex.quote(exit_code_path)}")
+        lines.append('trap \'ec=$?; echo $ec > "$EXIT_CODE_FILE"\' EXIT')
+        
         # Execute command
         if task.image:
              lines.append(f"# Image: {task.image} (Logic to be implemented)")
