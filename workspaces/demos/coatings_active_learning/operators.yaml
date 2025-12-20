@@ -1,0 +1,14 @@
+# Coatings Active Learning Demo - Operator Wiring
+# Demonstrates: Iterative campaign with surrogate AI
+# MatterStack v0.2.7+ auto-discovers this file
+
+operators:
+  local.default:
+    kind: local
+    backend:
+      type: local
+
+  hpc.default:
+    kind: hpc
+    backend:
+      type: local

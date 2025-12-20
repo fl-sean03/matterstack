@@ -1,0 +1,17 @@
+# Catalyst Human-in-Loop Demo - Operator Wiring
+# Demonstrates: HumanOperator for expert approval gates
+# MatterStack v0.2.7+ auto-discovers this file
+
+operators:
+  local.default:
+    kind: local
+    backend:
+      type: local
+
+  hpc.default:
+    kind: hpc
+    backend:
+      type: local
+
+  human.default:
+    kind: human

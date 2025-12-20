@@ -1,0 +1,14 @@
+# Battery Screening Demo - Operator Wiring
+# Demonstrates: Soft failure handling with local compute
+# MatterStack v0.2.7+ auto-discovers this file
+
+operators:
+  local.default:
+    kind: local
+    backend:
+      type: local
+
+  hpc.default:
+    kind: hpc
+    backend:
+      type: local  # Local backend for demo (simulates HPC behavior)

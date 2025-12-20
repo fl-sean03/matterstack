@@ -1,0 +1,21 @@
+# Thin Film Lab Demo - Operator Wiring
+# Demonstrates: ExperimentOperator for hardware-in-the-loop
+# MatterStack v0.2.7+ auto-discovers this file
+
+operators:
+  local.default:
+    kind: local
+    backend:
+      type: local
+
+  hpc.default:
+    kind: hpc
+    backend:
+      type: local
+
+  experiment.default:
+    kind: experiment
+    # Note: API config would go here for real lab equipment
+    # api:
+    #   base_url: https://lab-gateway.example
+    #   token_env: LAB_API_TOKEN

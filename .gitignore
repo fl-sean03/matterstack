@@ -48,15 +48,13 @@ htmlcov/
 # 1. Ignore all workspaces by default
 workspaces/*
 
-# 2. Whitelist specific demo projects
-!workspaces/coatings_active_learning/
-!workspaces/battery_screening/
-!workspaces/thin_film_lab/
-!workspaces/catalyst_human_in_loop/
+# 2. Whitelist demos directory and its contents
+!workspaces/demos/
+!workspaces/demos/**
 
-# 3. Ignore artifacts/results within whitelisted workspaces
-workspaces/*/results/
-workspaces/*/logs/
-workspaces/*/output/
-workspaces/*/data/
-workspaces/*/*.log
+# 3. Ignore artifacts/results within demo workspaces
+workspaces/demos/*/runs/
+workspaces/demos/*/results/
+workspaces/demos/*/logs/
+workspaces/demos/*/output/
+workspaces/demos/*/*.log
