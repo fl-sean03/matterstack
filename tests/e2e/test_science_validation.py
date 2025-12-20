@@ -40,8 +40,8 @@ def test_battery_science(tmp_path):
     base_path = tmp_path / "workspaces"
     (base_path / "battery_screening").mkdir(parents=True)
     
-    campaign = load_campaign("battery_screening")
-    handle = initialize_run("battery_screening", campaign, base_path=base_path)
+    campaign = load_campaign("demos/battery_screening")
+    handle = initialize_run("demos/battery_screening", campaign, base_path=base_path)
     
     # v0.2.5: "Local" execution_mode is simulated for non-operator tasks.
     # Use "HPC" to run compute tasks locally via ComputeOperator + LocalBackend.
@@ -76,7 +76,6 @@ def test_battery_science(tmp_path):
     assert "Average Formation Energy" in content
 
 
-@pytest.mark.skip(reason="Workspace 'thin_film_lab' is missing from repo")
 def test_thin_film_science(tmp_path):
     """
     Validates that Thin Film Lab produces a final report with drift metrics.
@@ -84,8 +83,8 @@ def test_thin_film_science(tmp_path):
     base_path = tmp_path / "workspaces"
     (base_path / "thin_film_lab").mkdir(parents=True)
     
-    campaign = load_campaign("thin_film_lab")
-    handle = initialize_run("thin_film_lab", campaign, base_path=base_path)
+    campaign = load_campaign("demos/thin_film_lab")
+    handle = initialize_run("demos/thin_film_lab", campaign, base_path=base_path)
 
     # Configure for Local execution
     config_path = handle.root_path / "config.json"
@@ -96,21 +95,36 @@ def test_thin_film_science(tmp_path):
     stop_event = threading.Event()
     
     def auto_robot():
-        op_dir = handle.root_path / "operators" / "experiment"
+        legacy_dir = handle.root_path / "operators" / "experiment"
+        tasks_dir = handle.root_path / "tasks"
+        
         while not stop_event.is_set():
-            if op_dir.exists():
-                for d in op_dir.iterdir():
+            # Preferred (v0.2.5+): attempt-scoped evidence dirs for ExperimentOperator
+            if tasks_dir.exists():
+                for d in tasks_dir.glob("*/attempts/*"):
+                    # Check for experiment_request.json (ExperimentOperator marker)
+                    if d.is_dir() and (d / "experiment_request.json").exists():
+                        res = d / "experiment_result.json"
+                        if not res.exists():
+                            # Write robot data to run root
+                            robot_data_path = handle.root_path / "robot_data.json"
+                            with open(robot_data_path, "w") as f:
+                                json.dump({"conductivity_exp": 0.05, "stability_exp": 0.8}, f)
+                            # Create result
+                            with open(res, "w") as f:
+                                f.write('{"status": "COMPLETED", "data": {"yield": 0.99}, "files": []}')
+            
+            # Legacy: operators/experiment/<uuid>/
+            if legacy_dir.exists():
+                for d in legacy_dir.iterdir():
                     res = d / "experiment_result.json"
                     if d.is_dir() and not res.exists():
-                        # Check for request config to mimic real robot behavior (writing to output_path)
-                        # But for simplicity, we know ThinFilm expects "robot_data.json" in run root
                         robot_data_path = handle.root_path / "robot_data.json"
                         with open(robot_data_path, "w") as f:
                             json.dump({"conductivity_exp": 0.05, "stability_exp": 0.8}, f)
-
-                        # Create result
                         with open(res, "w") as f:
                             f.write('{"status": "COMPLETED", "data": {"yield": 0.99}, "files": []}')
+            
             time.sleep(0.5)
             
     t = threading.Thread(target=auto_robot)
@@ -144,8 +158,8 @@ def test_catalyst_science(tmp_path):
     base_path = tmp_path / "workspaces"
     (base_path / "catalyst_human_in_loop").mkdir(parents=True)
     
-    campaign = load_campaign("catalyst_human_in_loop")
-    handle = initialize_run("catalyst_human_in_loop", campaign, base_path=base_path)
+    campaign = load_campaign("demos/catalyst_human_in_loop")
+    handle = initialize_run("demos/catalyst_human_in_loop", campaign, base_path=base_path)
 
     # v0.2.5: "Local" execution_mode is simulated for non-operator tasks.
     # Use "HPC" to run compute tasks locally via ComputeOperator + LocalBackend.
@@ -213,8 +227,8 @@ def test_coatings_science(tmp_path):
     base_path = tmp_path / "workspaces"
     (base_path / "coatings_active_learning").mkdir(parents=True)
     
-    campaign = load_campaign("coatings_active_learning")
-    handle = initialize_run("coatings_active_learning", campaign, base_path=base_path)
+    campaign = load_campaign("demos/coatings_active_learning")
+    handle = initialize_run("demos/coatings_active_learning", campaign, base_path=base_path)
     
     # v0.2.5: "Local" execution_mode is simulated for non-operator tasks.
     # Use "HPC" to run compute tasks locally via ComputeOperator + LocalBackend.

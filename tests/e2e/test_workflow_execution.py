@@ -35,9 +35,9 @@ def test_battery_screening_e2e(tmp_path):
     base_path = tmp_path / "workspaces"
     (base_path / "battery_screening").mkdir(parents=True)
     
-    campaign = load_campaign("battery_screening")
+    campaign = load_campaign("demos/battery_screening")
     
-    handle = initialize_run("battery_screening", campaign, base_path=base_path)
+    handle = initialize_run("demos/battery_screening", campaign, base_path=base_path)
     
     # Configure for Local execution
     config_path = handle.root_path / "config.json"
@@ -56,8 +56,8 @@ def test_catalyst_human_e2e(tmp_path):
     base_path = tmp_path / "workspaces"
     (base_path / "catalyst_human_in_loop").mkdir(parents=True)
     
-    campaign = load_campaign("catalyst_human_in_loop")
-    handle = initialize_run("catalyst_human_in_loop", campaign, base_path=base_path)
+    campaign = load_campaign("demos/catalyst_human_in_loop")
+    handle = initialize_run("demos/catalyst_human_in_loop", campaign, base_path=base_path)
     
     # Start thread to simulate human approval
     stop_event = threading.Event()
@@ -100,29 +100,42 @@ def test_catalyst_human_e2e(tmp_path):
         
     assert status == "COMPLETED"
 
-@pytest.mark.skip(reason="Workspace 'thin_film_lab' is missing from repo")
 def test_thin_film_e2e(tmp_path):
     base_path = tmp_path / "workspaces"
     (base_path / "thin_film_lab").mkdir(parents=True)
 
-    campaign = load_campaign("thin_film_lab")
-    handle = initialize_run("thin_film_lab", campaign, base_path=base_path)
+    campaign = load_campaign("demos/thin_film_lab")
+    handle = initialize_run("demos/thin_film_lab", campaign, base_path=base_path)
     
     # Start thread to simulate robot
     stop_event = threading.Event()
     
     def auto_robot():
-        op_dir = handle.root_path / "operators" / "experiment"
-        print(f"DEBUG: Watching {op_dir}")
+        legacy_dir = handle.root_path / "operators" / "experiment"
+        tasks_dir = handle.root_path / "tasks"
+        print(f"DEBUG: Watching {legacy_dir} and {tasks_dir}")
+        
         while not stop_event.is_set():
-            if op_dir.exists():
-                for d in op_dir.iterdir():
+            # Preferred (v0.2.5+): attempt-scoped evidence dirs for ExperimentOperator
+            if tasks_dir.exists():
+                for d in tasks_dir.glob("*/attempts/*"):
+                    # Check for experiment_request.json (ExperimentOperator marker)
+                    if d.is_dir() and (d / "experiment_request.json").exists():
+                        res = d / "experiment_result.json"
+                        if not res.exists():
+                            print(f"DEBUG: Creating result in {d}")
+                            with open(res, "w") as f:
+                                f.write('{"status": "COMPLETED", "data": {"yield": 0.99}, "files": []}')
+            
+            # Legacy: operators/experiment/<uuid>/
+            if legacy_dir.exists():
+                for d in legacy_dir.iterdir():
                     res = d / "experiment_result.json"
                     if d.is_dir() and not res.exists():
                         print(f"DEBUG: Creating result in {d}")
-                        # Create result
                         with open(res, "w") as f:
                             f.write('{"status": "COMPLETED", "data": {"yield": 0.99}, "files": []}')
+            
             time.sleep(0.5)
             
     t = threading.Thread(target=auto_robot)
