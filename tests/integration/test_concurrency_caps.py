@@ -15,7 +15,7 @@ def mock_config(tmp_path):
     config_file.write_text(json.dumps(config_data))
     return config_file
 
-@patch("matterstack.orchestration.run_lifecycle.SQLiteStateStore")
+@patch("matterstack.orchestration.step_execution.SQLiteStateStore")
 def test_concurrency_limit_applied(mock_store_cls, mock_config, tmp_path):
     # Setup
     run_handle = RunHandle(workspace_slug="test", run_id="run1", root_path=tmp_path)

@@ -143,6 +143,7 @@ def test_cli_step_passes_operator_registry_and_accepts_hpc_config_flag(
 
 def test_run_until_completion_threads_operator_registry(tmp_path: Path) -> None:
     import matterstack.orchestration.run_lifecycle as rl
+    import matterstack.orchestration.step_execution as step_exec
 
     run_root = tmp_path / "run_root"
     run_root.mkdir(parents=True, exist_ok=True)
@@ -163,7 +164,8 @@ def test_run_until_completion_threads_operator_registry(tmp_path: Path) -> None:
         return "COMPLETED"
 
     with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(rl, "step_run", _fake_step_run)
+        # Patch step_run in the step_execution module where utilities.run_until_completion imports it from
+        mp.setattr(step_exec, "step_run", _fake_step_run)
         status = rl.run_until_completion(handle, _DummyCampaign(), poll_interval=0.0, operator_registry=dummy_registry)
 
     assert status == "COMPLETED"

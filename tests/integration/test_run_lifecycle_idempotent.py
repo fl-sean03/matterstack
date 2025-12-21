@@ -103,8 +103,8 @@ def test_crash_recovery_partial_submission(workspace_path):
                 raise RuntimeError("Simulated Crash during DB Update")
             super().update_task_status(task_id, status)
 
-    # Patch the class in the module
-    with patch('matterstack.orchestration.run_lifecycle.SQLiteStateStore', side_effect=FlakyStore):
+    # Patch the class in the module where it's used (step_execution)
+    with patch('matterstack.orchestration.step_execution.SQLiteStateStore', side_effect=FlakyStore):
         # We need to set the flag on the instance. 
         # But `step_run` creates a new instance.
         # We can use `side_effect` on __init__ to set the flag?
