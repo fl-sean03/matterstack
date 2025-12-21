@@ -39,6 +39,19 @@ venv.bak/
 .DS_Store
 Thumbs.db
 
+# Tool-specific
+.roo/
+
+# Assets (large data files)
+assets/
+
+# Generated documentation
+docs/contextSummaries/
+docs/DevGuides/
+
+# Temporary results
+tmp_results/
+
 # Testing
 .coverage
 htmlcov/
