@@ -81,6 +81,7 @@ def test_cli_step_passes_operator_registry_and_accepts_hpc_config_flag(
     - Ensure cmd_step builds and passes operator_registry into step_run()
     """
     import matterstack.cli.main as cli_main
+    import matterstack.cli.commands.run_management as run_mgmt
 
     run_id = "r1"
     ws = "ws"
@@ -120,9 +121,10 @@ def test_cli_step_passes_operator_registry_and_accepts_hpc_config_flag(
         return "RUNNING"
 
     with pytest.MonkeyPatch().context() as mp:
-        mp.setattr(cli_main, "find_run", _fake_find_run)
-        mp.setattr(cli_main, "load_workspace_context", _fake_load_workspace_context)
-        mp.setattr(cli_main, "step_run", _fake_step_run)
+        # Patch in run_management module where cmd_step is defined
+        mp.setattr(run_mgmt, "find_run", _fake_find_run)
+        mp.setattr(run_mgmt, "load_workspace_context", _fake_load_workspace_context)
+        mp.setattr(run_mgmt, "step_run", _fake_step_run)
 
         mp.setattr(
             sys,

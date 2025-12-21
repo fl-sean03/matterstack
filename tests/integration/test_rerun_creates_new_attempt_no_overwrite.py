@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import patch
 
-from matterstack.cli.main import cmd_rerun
+from matterstack.cli.commands.task_management import cmd_rerun
 from matterstack.core.campaign import Campaign
 from matterstack.core.external import ExternalTask
 from matterstack.core.workflow import Task, Workflow
@@ -139,7 +139,7 @@ def test_rerun_creates_new_attempt_without_overwriting_attempt_evidence(tmp_path
     args = _Args(run_id=run_handle.run_id, task_id=compute_task_id)
 
     # cmd_rerun discovers the run via find_run(); patch it to return this test run.
-    with patch("matterstack.cli.main.find_run", return_value=run_handle):
+    with patch("matterstack.cli.commands.task_management.find_run", return_value=run_handle):
         cmd_rerun(args)
 
     # ---- Attempt 2 ----
