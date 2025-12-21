@@ -1,0 +1,50 @@
+# MatterStack Source File Line Count Inventory (Before Refactor)
+# Generated: 2025-12-21
+# Format: LINES FILENAME
+
+# ============================================
+# FILES EXCEEDING 500 LINES (MUST REFACTOR)
+# ============================================
+   945 matterstack/orchestration/run_lifecycle.py
+   897 matterstack/cli/main.py
+   740 matterstack/storage/state_store.py
+   640 matterstack/config/operator_wiring.py
+   564 matterstack/runtime/operators/hpc.py
+
+# ============================================
+# ALL SOURCE FILES (Sorted Descending by Lines)
+# ============================================
+
+# --- matterstack/ package ---
+   945 matterstack/orchestration/run_lifecycle.py
+   897 matterstack/cli/main.py
+   740 matterstack/storage/state_store.py
+   640 matterstack/config/operator_wiring.py
+   564 matterstack/runtime/operators/hpc.py
+   389 matterstack/runtime/backends/local.py
+   346 matterstack/orchestration/api.py
+   336 matterstack/runtime/backends/hpc/backend.py
+   321 matterstack/storage/export.py
+   290 matterstack/config/profiles.py
+   188 matterstack/storage/schema.py
+   186 matterstack/cli/operator_registry.py
+   123 matterstack/cli/tui.py
+   104 matterstack/core/workflow.py
+   102 matterstack/core/backend.py
+    74 matterstack/core/operators.py
+    51 matterstack/core/domain.py
+    16 matterstack/runtime/execution.py
+
+# --- Other notable files (< 100 lines each) ---
+# matterstack/core/*.py - Various core modules
+# matterstack/runtime/operators/*.py - Operator implementations
+# matterstack/cli/*.py - CLI utilities
+# matterstack/config/*.py - Configuration modules
+# matterstack/orchestration/*.py - Orchestration support
+# matterstack/__init__.py - Package init
+
+# ============================================
+# SUMMARY
+# ============================================
+# Total files exceeding 500 lines: 5
+# Combined excess lines: (945-500) + (897-500) + (740-500) + (640-500) + (564-500) = 1786 lines over limit
