@@ -71,3 +71,4 @@ workspaces/demos/*/results/
 workspaces/demos/*/logs/
 workspaces/demos/*/output/
 workspaces/demos/*/*.log
+workspaces/demos/*/__pycache__/
