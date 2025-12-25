@@ -1,11 +1,13 @@
 import json
-import pytest
 from unittest.mock import MagicMock, patch
 
-from matterstack.orchestration.run_lifecycle import step_run, RunHandle
+import pytest
+
 from matterstack.core.campaign import Campaign
-from matterstack.core.operators import ExternalRunStatus
 from matterstack.core.external import ExternalTask
+from matterstack.core.operators import ExternalRunStatus
+from matterstack.orchestration.run_lifecycle import RunHandle, step_run
+
 
 # Mock config.json
 @pytest.fixture
@@ -21,10 +23,10 @@ def test_concurrency_limit_applied(mock_store_cls, mock_config, tmp_path):
     run_handle = RunHandle(workspace_slug="test", run_id="run1", root_path=tmp_path)
     mock_store = mock_store_cls.return_value
     mock_store.lock.return_value.__enter__.return_value = None
-    
+
     # 0. Run Status
     mock_store.get_run_status.return_value = "RUNNING"
-    
+
     # 1. Active attempts: 1 active (occupies a slot)
     # Provide concrete scalar values to avoid pydantic validation errors in attempt polling.
     active_attempt = MagicMock()
@@ -38,7 +40,7 @@ def test_concurrency_limit_applied(mock_store_cls, mock_config, tmp_path):
     active_attempt.status = ExternalRunStatus.RUNNING.value
     mock_store.get_active_attempts.return_value = [active_attempt]
     mock_store.get_attempt_task_ids.return_value = {"task1"}
-    
+
     # Per-operator concurrency tracking (v0.2.6+)
     # ExternalTask without operator_key resolves to "" (empty string)
     mock_store.count_active_attempts_by_operator.return_value = {"": 1}
@@ -52,23 +54,23 @@ def test_concurrency_limit_applied(mock_store_cls, mock_config, tmp_path):
     task_ready_1 = ExternalTask(task_id="task2", command="echo 1", image="ubuntu:latest")
     task_ready_2 = ExternalTask(task_id="task3", command="echo 2", image="ubuntu:latest")
     task_ready_3 = ExternalTask(task_id="task4", command="echo 3", image="ubuntu:latest")
-    
+
     tasks = [task_ready_1, task_ready_2, task_ready_3]
     mock_store.get_tasks.return_value = tasks
-    
+
     # All tasks are "PENDING" (None status in store)
     mock_store.get_task_status.side_effect = lambda tid: None
-    
+
     # Campaign Mock
     campaign = MagicMock(spec=Campaign)
-    
+
     # Execute step_run
     step_run(run_handle, campaign)
-    
+
     # Verification
     # Limit is 2. Active is 1. Slots available = 1.
     # Only 1 new task should be submitted.
-    
+
     # Check attempt creation calls (v2)
     assert mock_store.create_attempt.call_count == 1
 

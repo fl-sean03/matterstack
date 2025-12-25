@@ -1,12 +1,14 @@
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Dict, Optional, List
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
 from matterstack.core.run import RunHandle
+
 
 class ExternalRunStatus(str, Enum):
     CREATED = "CREATED"
@@ -18,34 +20,39 @@ class ExternalRunStatus(str, Enum):
     CANCELLED = "CANCELLED"
     WAITING_EXTERNAL = "WAITING_EXTERNAL"
 
+
 class ExternalRunHandle(BaseModel):
     """
     Handle for a task execution managed by an Operator.
     """
+
     task_id: str
     operator_type: str
     external_id: Optional[str] = None
     status: ExternalRunStatus = ExternalRunStatus.CREATED
     operator_data: Dict[str, Any] = Field(default_factory=dict)
-    
+
     # Path relative to run root where operator data is stored
     relative_path: Optional[Path] = None
+
 
 class OperatorResult(BaseModel):
     """
     Result returned by an operator after successful execution.
     """
+
     task_id: str
     status: ExternalRunStatus
     files: Dict[str, Path] = Field(default_factory=dict)  # Output files
-    data: Dict[str, Any] = Field(default_factory=dict)    # Structured data
+    data: Dict[str, Any] = Field(default_factory=dict)  # Structured data
     error_message: Optional[str] = None
+
 
 class Operator(ABC):
     """
     Abstract interface for executing tasks on external systems.
     """
-    
+
     @abstractmethod
     def prepare_run(self, run: RunHandle, task: Any) -> ExternalRunHandle:
         """

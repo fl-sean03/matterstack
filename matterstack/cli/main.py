@@ -7,34 +7,32 @@ This module contains:
 
 Command implementations are in the commands/ subpackage.
 """
+
 import argparse
 import logging
 
 from matterstack.cli.commands import (
-    cmd_init,
-    cmd_step,
-    cmd_loop,
-    cmd_cancel,
-    cmd_pause,
-    cmd_resume,
-    cmd_revive,
-    cmd_rerun,
     cmd_attempts,
+    cmd_cancel,
     cmd_cancel_attempt,
     cmd_cleanup_orphans,
-    cmd_status,
     cmd_explain,
-    cmd_monitor,
     cmd_export_evidence,
+    cmd_init,
+    cmd_loop,
+    cmd_monitor,
+    cmd_pause,
+    cmd_rerun,
+    cmd_resume,
+    cmd_revive,
     cmd_self_test,
+    cmd_status,
+    cmd_step,
 )
 from matterstack.cli.reset import cmd_reset
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
 
 def main():
@@ -154,11 +152,15 @@ def main():
     parser_revive.set_defaults(func=cmd_revive)
 
     # rerun
-    parser_rerun = subparsers.add_parser("rerun", help="Rerun a task by resetting it to PENDING (creates a new attempt on next tick)")
+    parser_rerun = subparsers.add_parser(
+        "rerun", help="Rerun a task by resetting it to PENDING (creates a new attempt on next tick)"
+    )
     parser_rerun.add_argument("run_id", help="Run ID")
     parser_rerun.add_argument("task_id", help="Task ID")
     parser_rerun.add_argument("--recursive", action="store_true", help="Include dependent tasks")
-    parser_rerun.add_argument("--force", action="store_true", help="Skip confirmation prompt / force cancel active attempt")
+    parser_rerun.add_argument(
+        "--force", action="store_true", help="Skip confirmation prompt / force cancel active attempt"
+    )
     parser_rerun.set_defaults(func=cmd_rerun)
 
     # attempts
@@ -168,7 +170,9 @@ def main():
     parser_attempts.set_defaults(func=cmd_attempts)
 
     # cancel-attempt
-    parser_cancel_attempt = subparsers.add_parser("cancel-attempt", help="Cancel an attempt safely (DB state; backend cancel best-effort)")
+    parser_cancel_attempt = subparsers.add_parser(
+        "cancel-attempt", help="Cancel an attempt safely (DB state; backend cancel best-effort)"
+    )
     parser_cancel_attempt.add_argument("run_id", help="Run ID")
     parser_cancel_attempt.add_argument("attempt_id", help="Attempt ID")
     parser_cancel_attempt.add_argument("--force", action="store_true", help="Skip confirmation prompt")
@@ -178,7 +182,9 @@ def main():
     parser_reset = subparsers.add_parser("reset-run", help="Reset or delete tasks in a run")
     parser_reset.add_argument("run_id", help="Run ID")
     parser_reset.add_argument("task_id", help="Target Task ID")
-    parser_reset.add_argument("--action", choices=["reset", "delete"], default="reset", help="Action to perform (reset to PENDING or delete)")
+    parser_reset.add_argument(
+        "--action", choices=["reset", "delete"], default="reset", help="Action to perform (reset to PENDING or delete)"
+    )
     parser_reset.add_argument("--recursive", action="store_true", help="Include dependent tasks")
     parser_reset.add_argument("--force", action="store_true", help="Skip confirmation prompt")
     parser_reset.set_defaults(func=cmd_reset)

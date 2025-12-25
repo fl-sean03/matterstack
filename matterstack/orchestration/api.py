@@ -5,11 +5,11 @@ import logging
 from pathlib import Path
 from typing import Dict, Optional, Union
 
+from matterstack.config.profiles import ExecutionProfile, get_default_profile, load_profile
+
 from ..core.backend import ComputeBackend, JobState, JobStatus
 from ..core.workflow import Task, Workflow
 from .results import TaskLogs, TaskResult, WorkflowResult
-from matterstack.config.profiles import ExecutionProfile, load_profile, get_default_profile
-
 
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 logger = logging.getLogger(__name__)
@@ -61,9 +61,7 @@ async def run_task_async(
         return TaskResult(
             task=task,
             job_id="submission_failed",
-            status=JobStatus(
-                job_id=task.task_id, state=JobState.FAILED, reason=f"Submission failed: {e}"
-            ),
+            status=JobStatus(job_id=task.task_id, state=JobState.FAILED, reason=f"Submission failed: {e}"),
             logs=TaskLogs(stdout="", stderr=str(e)),
             workspace_path=Path("."),
             profile_name=profile_name,
@@ -87,9 +85,7 @@ async def run_task_async(
         return TaskResult(
             task=task,
             job_id=job_id,
-            status=JobStatus(
-                job_id=job_id, state=JobState.COMPLETED_ERROR, reason=f"Polling failed: {e}"
-            ),
+            status=JobStatus(job_id=job_id, state=JobState.COMPLETED_ERROR, reason=f"Polling failed: {e}"),
             logs=TaskLogs(stdout="", stderr=str(e)),
             workspace_path=_infer_workspace_path(backend, job_id),
             profile_name=profile_name,
@@ -129,7 +125,7 @@ async def run_workflow_async(
     continue_on_error: bool = False,
     poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
     max_concurrent_tasks: int = 1,
-    fail_fast: Optional[bool] = None, # Deprecated
+    fail_fast: Optional[bool] = None,  # Deprecated
 ) -> WorkflowResult:
     """
     Execute a Workflow sequentially in topological order.
@@ -143,38 +139,16 @@ async def run_workflow_async(
                            Dependent tasks will be cancelled, but independent tasks will run.
                            If False (default), execution aborts immediately on first failure.
     """
-    
-    # Backward compatibility for fail_fast
+
+    # Deprecated: fail_fast parameter is ignored. Use continue_on_error instead.
     if fail_fast is not None:
-         # logic inversion: old fail_fast=True means continue_on_error=False (mostly)
-         # but actually old fail_fast behavior was "cancel dependents but run others" which is NOW continue_on_error=True
-         # WAIT - The old logic was: "If fail_fast and failed_deps: Skip. Else: Run."
-         # It effectively acted like "continue_on_error=True" (soft failure) because it didn't abort the loop.
-         # So if the user wants strict abort, they need new behavior.
-         
-         # Let's align with the prompt:
-         # "Soft Failures: Currently, run_workflow aborts if any task fails (fail-fast)."
-         # -> Prompt says it currently aborts. Let's re-read the code I replaced.
-         # The old code:
-         # `if fail_fast and failed_deps: continue`
-         # This means it skipped dependents but DID NOT BREAK the loop. So it ran independent tasks.
-         # So the prompt premise "Currently run_workflow aborts" might be slightly inaccurate regarding the implementation I saw,
-         # OR "fail-fast" implies the loop breaks.
-         # Actually, the old code NEVER broke the loop. It just skipped tasks with failed deps.
-         # So the old behavior was ALWAYS "Soft Failure" style.
-         # We need to add strict abort support.
-         
-         # If fail_fast=True (old default), we want the OLD behavior (which was actually soft fail).
-         # So continue_on_error should be True to match old behavior?
-         # NO. The prompt says "Currently... aborts". Maybe I missed a return?
-         # No, I checked line 203. It returns after the loop.
-         # So the CURRENT implementation ALREADY does "Partial Success" logic (skips dependents, runs others).
-         # The Requirement is: "We need a mode (continue_on_error=True) where independent tasks continue... currently it aborts".
-         # Since the code I see doesn't abort, I will implement what is requested:
-         # continue_on_error=False -> Abort immediately.
-         # continue_on_error=True -> Skip dependents, run others.
-         
-         pass
+        import warnings
+
+        warnings.warn(
+            "fail_fast is deprecated; use continue_on_error instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     # For now we ignore max_concurrent_tasks and run strictly sequentially.
     task_results: Dict[str, TaskResult] = {}
@@ -218,9 +192,7 @@ async def run_workflow_async(
                 should_skip = True
 
         if should_skip:
-            logger.info(
-                f"Skipping task {task.task_id} due to failed dependencies: {failed_deps}"
-            )
+            logger.info(f"Skipping task {task.task_id} due to failed dependencies: {failed_deps}")
             cancelled_result = _make_cancelled_result(
                 task=task,
                 profile_name=profile_name,

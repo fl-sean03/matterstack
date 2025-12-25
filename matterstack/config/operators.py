@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Union, Literal
+from typing import Any, Dict, Literal, Mapping, Optional, Union
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -278,9 +278,7 @@ def parse_operators_config_dict(data: Any, *, path: Union[str, Path]) -> Operato
         try:
             inst = OperatorInstanceConfig.model_validate(raw_cfg)
         except ValidationError as exc:
-            raise OperatorsConfigError(
-                f"{p}: invalid config for operators.{normalized_key}: {exc}"
-            ) from exc
+            raise OperatorsConfigError(f"{p}: invalid config for operators.{normalized_key}: {exc}") from exc
 
         if inst.kind != key_kind:
             raise OperatorsConfigError(

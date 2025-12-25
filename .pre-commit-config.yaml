@@ -1,0 +1,17 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+        args: [--check]
+
+  - repo: local
+    hooks:
+      - id: check-max-lines
+        name: Check 500 LOC limit
+        entry: ./scripts/check_max_lines.sh
+        language: script
+        pass_filenames: false
+        always_run: true

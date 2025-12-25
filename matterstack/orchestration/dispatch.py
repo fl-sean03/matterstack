@@ -4,27 +4,28 @@ EXECUTE phase logic for the run lifecycle.
 This module contains functions for operator dispatch, concurrency control,
 and task submission.
 """
-from __future__ import annotations
-import logging
-import json
-from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, TYPE_CHECKING
 
-from matterstack.core.run import RunHandle
-from matterstack.core.workflow import Task
-from matterstack.core.operators import ExternalRunStatus
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any, Dict, List, Optional, Tuple
+
 from matterstack.core.external import ExternalTask
 from matterstack.core.gate import GateTask
-from matterstack.core.operator_keys import (
-    is_canonical_operator_key,
-    legacy_operator_type_to_key,
-    normalize_operator_key,
-)
 from matterstack.core.lifecycle import (
     AttemptContext,
     AttemptLifecycleHook,
     fire_hook_safely,
 )
+from matterstack.core.operator_keys import (
+    is_canonical_operator_key,
+    legacy_operator_type_to_key,
+    normalize_operator_key,
+)
+from matterstack.core.operators import ExternalRunStatus
+from matterstack.core.run import RunHandle
+from matterstack.core.workflow import Task
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +36,10 @@ def resolve_operator_key_for_dispatch(operator_type: Optional[str]) -> Optional[
 
     - If already canonical (e.g. "hpc.default"), normalize it.
     - Else treat as legacy operator_type (e.g. "Human", "HPC") and map to "*.default".
-    
+
     Args:
         operator_type: The operator type string from task or config.
-    
+
     Returns:
         The canonical operator key, or None if not resolvable.
     """
@@ -62,15 +63,15 @@ def calculate_concurrency_slots(
 ) -> Tuple[int, int]:
     """
     Calculate available concurrency slots.
-    
+
     Counts active executions (SUBMITTED/RUNNING/WAITING_EXTERNAL) from both
     attempts (v2) and legacy external runs (v1), then returns available slots.
-    
+
     Args:
         run_handle: The run handle.
         store: The SQLiteStateStore instance.
         max_hpc_jobs: Maximum concurrent jobs allowed.
-    
+
     Returns:
         Tuple of (active_count, slots_available).
     """
@@ -78,7 +79,7 @@ def calculate_concurrency_slots(
 
     attempt_task_ids = store.get_attempt_task_ids(run_handle.run_id)
     active_attempts_for_slots = store.get_active_attempts(run_handle.run_id)
-    
+
     for a in active_attempts_for_slots:
         if a.status in [
             ExternalRunStatus.SUBMITTED.value,
@@ -100,52 +101,52 @@ def calculate_concurrency_slots(
             active_external_count += 1
 
     slots_available = max(0, max_hpc_jobs - active_external_count)
-    
+
     return active_external_count, slots_available
 
 
 def get_max_hpc_jobs(run_handle: RunHandle) -> int:
     """
     Read max_hpc_jobs_per_run from config.json if available.
-    
+
     Args:
         run_handle: The run handle.
-    
+
     Returns:
         The configured max jobs, or 10 as default.
     """
     max_hpc_jobs = 10
     config_path = run_handle.root_path / "config.json"
-    
+
     if config_path.exists():
         try:
             cfg = json.loads(config_path.read_text())
             max_hpc_jobs = cfg.get("max_hpc_jobs_per_run", 10)
         except Exception as e:
             logger.warning(f"Failed to read config.json, using default limit: {e}")
-    
+
     return max_hpc_jobs
 
 
 def get_execution_mode(run_handle: RunHandle) -> str:
     """
     Read execution_mode from config.json if available.
-    
+
     Args:
         run_handle: The run handle.
-    
+
     Returns:
         The configured execution mode, or "Simulation" as default.
     """
     config_path = run_handle.root_path / "config.json"
-    
+
     if config_path.exists():
         try:
             cfg = json.loads(config_path.read_text())
             return cfg.get("execution_mode", "Simulation")
         except Exception:
             pass
-    
+
     return "Simulation"
 
 
@@ -155,23 +156,23 @@ def determine_operator_type(
 ) -> Optional[str]:
     """
     Determine the effective operator type for a task.
-    
+
     Priority: Task operator_key > Task Env > Task Type > Config Default
-    
+
     Args:
         task: The task to check.
         run_handle: The run handle.
-    
+
     Returns:
         The operator type string, or None for local simulation.
     """
     # Priority 1: First-class operator_key on Task (v0.2.6+)
     if hasattr(task, "operator_key") and task.operator_key:
         return task.operator_key
-    
+
     # Priority 2: Environment override (legacy)
     explicit_operator = task.env.get("MATTERSTACK_OPERATOR")
-    
+
     if explicit_operator:
         return explicit_operator
     elif isinstance(task, GateTask):
@@ -184,7 +185,7 @@ def determine_operator_type(
             return "HPC"
         elif default_mode == "Local":
             return "Local"
-    
+
     return None
 
 
@@ -198,9 +199,9 @@ def submit_task_to_operator(
 ) -> bool:
     """
     Submit a task to an operator.
-    
+
     Creates an attempt, prepares, and submits the task.
-    
+
     Args:
         task: The task to submit.
         operator_type: The operator type string.
@@ -208,7 +209,7 @@ def submit_task_to_operator(
         store: The SQLiteStateStore instance.
         operators: The operator registry dict.
         lifecycle_hooks: Optional lifecycle hooks to fire during attempt processing.
-    
+
     Returns:
         True if successful, False if operator not found or error.
     """
@@ -293,9 +294,7 @@ def submit_task_to_operator(
         )
 
         # Fire on_submit lifecycle hook
-        fire_hook_safely(
-            lifecycle_hooks, "on_submit", attempt_context, ext_handle.external_id
-        )
+        fire_hook_safely(lifecycle_hooks, "on_submit", attempt_context, ext_handle.external_id)
 
         # Update Task Status (SUBMITTED -> WAITING_EXTERNAL)
         if ext_handle.status == ExternalRunStatus.SUBMITTED:
@@ -314,8 +313,9 @@ def submit_task_to_operator(
             f"Failed to dispatch operator {dispatch_key_used} (requested {operator_type}, resolved operator_key={canonical_operator_key!r}): {e}"
         )
         import traceback
+
         traceback.print_exc()
-        
+
         if attempt_id is not None:
             try:
                 store.update_attempt(
@@ -342,10 +342,10 @@ def submit_external_task_stub(
 ) -> None:
     """
     Create a stub attempt for ExternalTask/GateTask without operator execution.
-    
+
     This is for legacy "external coordination" tasks where we record a
     WAITING_EXTERNAL attempt for provenance/idempotency.
-    
+
     Args:
         task: The external or gate task.
         run_handle: The run handle.
@@ -368,9 +368,9 @@ def submit_local_simulation(
 ) -> None:
     """
     Handle local compute task in simulation mode.
-    
+
     No attempt record is created; task is marked COMPLETED immediately.
-    
+
     Args:
         task: The task to simulate.
         store: The SQLiteStateStore instance.

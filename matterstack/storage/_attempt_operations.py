@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 class _AttemptOperationsMixin:
     """
     Mixin class providing task attempt operations for SQLiteStateStore (v2 schema).
-    
+
     Expects the following attributes on self:
     - SessionLocal: SQLAlchemy sessionmaker instance
     """
@@ -47,16 +47,12 @@ class _AttemptOperationsMixin:
         Create a new task attempt (schema v2) and set tasks.current_attempt_id.
         """
         with self.SessionLocal() as session:
-            task = session.scalar(
-                select(TaskModel).where(TaskModel.task_id == task_id, TaskModel.run_id == run_id)
-            )
+            task = session.scalar(select(TaskModel).where(TaskModel.task_id == task_id, TaskModel.run_id == run_id))
             if not task:
                 raise ValueError(f"Task {task_id} not found in run {run_id}.")
 
             max_index = session.scalar(
-                select(func.max(TaskAttemptModel.attempt_index)).where(
-                    TaskAttemptModel.task_id == task_id
-                )
+                select(func.max(TaskAttemptModel.attempt_index)).where(TaskAttemptModel.task_id == task_id)
             )
             next_index = int(max_index or 0) + 1
 
@@ -80,11 +76,7 @@ class _AttemptOperationsMixin:
             )
 
             session.add(model)
-            session.execute(
-                update(TaskModel)
-                .where(TaskModel.task_id == task_id)
-                .values(current_attempt_id=attempt_id)
-            )
+            session.execute(update(TaskModel).where(TaskModel.task_id == task_id).values(current_attempt_id=attempt_id))
             session.commit()
 
             return attempt_id
@@ -104,13 +96,13 @@ class _AttemptOperationsMixin:
     def get_attempt_count(self, run_id: str, task_id: str) -> int:
         """
         Get the count of attempts for a task in a run.
-        
+
         This is the current attempt_index value (1-based count of attempts).
-        
+
         Args:
             run_id: The run ID.
             task_id: The task ID.
-        
+
         Returns:
             The count of attempts for this task, or 0 if none exist.
         """
@@ -183,24 +175,18 @@ class _AttemptOperationsMixin:
         Get the current attempt for a task via tasks.current_attempt_id.
         """
         with self.SessionLocal() as session:
-            attempt_id = session.scalar(
-                select(TaskModel.current_attempt_id).where(TaskModel.task_id == task_id)
-            )
+            attempt_id = session.scalar(select(TaskModel.current_attempt_id).where(TaskModel.task_id == task_id))
             if not attempt_id:
                 return None
 
-            return session.scalar(
-                select(TaskAttemptModel).where(TaskAttemptModel.attempt_id == attempt_id)
-            )
+            return session.scalar(select(TaskAttemptModel).where(TaskAttemptModel.attempt_id == attempt_id))
 
     def get_attempt(self, attempt_id: str) -> Optional[TaskAttemptModel]:
         """
         Get a task attempt by attempt_id.
         """
         with self.SessionLocal() as session:
-            return session.scalar(
-                select(TaskAttemptModel).where(TaskAttemptModel.attempt_id == attempt_id)
-            )
+            return session.scalar(select(TaskAttemptModel).where(TaskAttemptModel.attempt_id == attempt_id))
 
     def get_attempt_task_ids(self, run_id: str) -> Set[str]:
         """
@@ -210,9 +196,7 @@ class _AttemptOperationsMixin:
         """
         with self.SessionLocal() as session:
             rows = session.execute(
-                select(TaskAttemptModel.task_id)
-                .where(TaskAttemptModel.run_id == run_id)
-                .distinct()
+                select(TaskAttemptModel.task_id).where(TaskAttemptModel.run_id == run_id).distinct()
             ).all()
             return {r[0] for r in rows}
 
@@ -235,9 +219,7 @@ class _AttemptOperationsMixin:
         operator prepare/submit/poll/collect.
         """
         with self.SessionLocal() as session:
-            model = session.scalar(
-                select(TaskAttemptModel).where(TaskAttemptModel.attempt_id == attempt_id)
-            )
+            model = session.scalar(select(TaskAttemptModel).where(TaskAttemptModel.attempt_id == attempt_id))
             if not model:
                 raise ValueError(f"Attempt {attempt_id} not found.")
 

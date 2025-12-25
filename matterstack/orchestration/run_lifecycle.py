@@ -16,13 +16,17 @@ All existing imports continue to work:
 - from matterstack.orchestration.run_lifecycle import run_until_completion
 - etc.
 """
+
 from __future__ import annotations
+
+# Re-export RunHandle for backward compatibility (used in some tests)
+from matterstack.core.run import RunHandle
 
 # Re-export from initialization
 from matterstack.orchestration.initialization import (
     RunLifecycleError,
-    initialize_run,
     initialize_or_resume_run,
+    initialize_run,
 )
 
 # Re-export from step_execution
@@ -30,12 +34,9 @@ from matterstack.orchestration.step_execution import step_run
 
 # Re-export from utilities
 from matterstack.orchestration.utilities import (
-    run_until_completion,
     list_active_runs,
+    run_until_completion,
 )
-
-# Re-export RunHandle for backward compatibility (used in some tests)
-from matterstack.core.run import RunHandle
 
 # Re-export SQLiteStateStore for backward compatibility (used in test patching)
 from matterstack.storage.state_store import SQLiteStateStore

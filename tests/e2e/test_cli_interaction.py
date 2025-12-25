@@ -7,7 +7,6 @@ import pytest
 from matterstack.cli.main import main
 from matterstack.storage.state_store import SQLiteStateStore
 
-
 WORKSPACE_SLUG = "test_workspace_attempts"
 TASK_ID = "ext_rerun_1"
 

@@ -72,9 +72,7 @@ def normalize_operator_key(value: str) -> str:
         raise ValueError(f"operator_key must not contain '..': {value!r}")
 
     if not is_canonical_operator_key(raw):
-        raise ValueError(
-            f"operator_key must match kind.name with allowed characters; got {value!r}"
-        )
+        raise ValueError(f"operator_key must match kind.name with allowed characters; got {value!r}")
 
     return raw
 
@@ -148,9 +146,7 @@ def resolve_operator_key_for_attempt(attempt: AttemptLike) -> Optional[ResolvedO
         if isinstance(from_json, str) and from_json.strip():
             try:
                 ok = normalize_operator_key(from_json)
-                return ResolvedOperatorKey(
-                    operator_key=ok, source="attempt.operator_data.operator_key"
-                )
+                return ResolvedOperatorKey(operator_key=ok, source="attempt.operator_data.operator_key")
             except Exception:
                 pass
 

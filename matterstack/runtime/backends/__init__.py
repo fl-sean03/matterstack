@@ -1,7 +1,9 @@
 from __future__ import annotations
+
 from typing import Optional
 
 from ...core.backend import ComputeBackend
+
 
 def create_backend_from_profile(profile_name: str, config_path: Optional[str] = None) -> ComputeBackend:
     """
@@ -20,5 +22,6 @@ def create_backend_from_profile(profile_name: str, config_path: Optional[str] = 
         ValueError: If the profile configuration is invalid.
     """
     from ...config.profiles import load_profile
+
     profile = load_profile(profile_name, config_path)
     return profile.create_backend()

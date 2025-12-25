@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import Optional, Sequence
 from pathlib import PurePosixPath
+from typing import Optional, Sequence
 
 try:
     import paramiko  # type: ignore[import]
@@ -14,20 +14,25 @@ except ImportError:  # pragma: no cover - optional dependency for HPC backends
     # raised if SSHClient.connect is actually used.
     paramiko = None  # type: ignore[assignment]
 
+
 @dataclass
 class CommandResult:
     """Result of a remote command run over SSH."""
+
     stdout: str
     stderr: str
     exit_status: int
 
+
 @dataclass
 class SSHConfig:
     """Configuration for SSH connection."""
+
     host: str
     user: str
     port: int = 22
     key_path: Optional[str] = None
+
 
 class SSHClient:
     """
@@ -42,7 +47,7 @@ class SSHClient:
     async def connect(cls, config: SSHConfig) -> "SSHClient":
         """
         Open an SSH connection.
-        
+
         Raises:
             ImportError: If paramiko is not installed.
             RuntimeError: If connection fails (authentication, host key, or network issues).
@@ -78,14 +83,11 @@ class SSHClient:
                 ) from e
             except paramiko.BadHostKeyException as e:
                 raise RuntimeError(
-                    f"SSH host key verification failed for {config.host}. "
-                    "Host key may have changed."
+                    f"SSH host key verification failed for {config.host}. Host key may have changed."
                 ) from e
             except (paramiko.SSHException, OSError) as e:
-                raise RuntimeError(
-                    f"Failed to connect to {config.host}: {str(e)}"
-                ) from e
-            
+                raise RuntimeError(f"Failed to connect to {config.host}: {str(e)}") from e
+
             return client
 
         client = await asyncio.to_thread(_connect)
@@ -98,22 +100,24 @@ class SSHClient:
 
     async def close(self) -> None:
         """Close underlying SSH/SFTP connections."""
+
         def _close():
             if self._sftp is not None:
                 self._sftp.close()
             self._client.close()
-        
+
         await asyncio.to_thread(_close)
 
     async def run(self, command: str, *, cwd: Optional[str] = None) -> CommandResult:
         """
         Run a shell command on the remote host.
-        
+
         Raises:
             RuntimeError: If the command execution fails due to SSH connection issues.
         """
         if cwd:
             import shlex
+
             full_cmd = f"cd {shlex.quote(cwd)} && {command}"
         else:
             full_cmd = command
@@ -123,14 +127,14 @@ class SSHClient:
                 # exec_command returns (stdin, stdout, stderr)
                 # Note: exec_command does not block, but reading from the channels will.
                 stdin, stdout, stderr = self._client.exec_command(full_cmd)
-                
+
                 # Wait for command to complete and get exit status
                 exit_status = stdout.channel.recv_exit_status()
-                
+
                 # Read output
-                out_str = stdout.read().decode('utf-8', errors='replace')
-                err_str = stderr.read().decode('utf-8', errors='replace')
-                
+                out_str = stdout.read().decode("utf-8", errors="replace")
+                err_str = stderr.read().decode("utf-8", errors="replace")
+
                 return out_str, err_str, exit_status
             except paramiko.SSHException as e:
                 raise RuntimeError(f"SSH connection lost during command execution: {command}") from e
@@ -147,7 +151,7 @@ class SSHClient:
     async def mkdir_p(self, path: str) -> None:
         """
         Recursively create a directory path, like `mkdir -p`.
-        
+
         Raises:
             IOError: If directory creation fails (e.g. permission denied) and it's not because it already exists.
         """
@@ -156,7 +160,7 @@ class SSHClient:
         parts: Sequence[str] = pure.parts
 
         cur = PurePosixPath("/")
-        
+
         def _mkdir_recursive():
             nonlocal cur
             for part in parts:
@@ -194,7 +198,7 @@ class SSHClient:
                     f.write(content)
             except IOError as e:
                 raise IOError(f"Failed to write text to {path}: {e}") from e
-                
+
         await asyncio.to_thread(_write)
 
     async def read_bytes(
@@ -206,12 +210,12 @@ class SSHClient:
     ) -> bytes:
         """
         Read bytes from a file.
-        
+
         Raises:
             IOError: If file cannot be read.
         """
         sftp = await self._ensure_sftp()
-        
+
         def _read():
             try:
                 with sftp.open(path, "rb") as f:
@@ -230,30 +234,31 @@ class SSHClient:
         remote_path: str,
         local_path: str,
         recursive: bool = False,
-        filter_callback: Optional[callable[[str], bool]] = None
+        filter_callback: Optional[callable[[str], bool]] = None,
     ) -> None:
         """
         Download a file or directory from the remote host.
         If recursive is True, downloads a directory.
-        
+
         Args:
             remote_path: Source path on remote.
             local_path: Destination path on local.
             recursive: Whether to download directories recursively.
             filter_callback: Optional function that takes a remote path (str) and returns True if it should be downloaded.
                              Only applies to files when recursive is True.
-        
+
         Raises:
             IOError: If download fails.
         """
         sftp = await self._ensure_sftp()
-        
+
         def _get():
             if recursive:
                 # Check if remote is dir
                 try:
                     r_stat = sftp.stat(remote_path)
                     import stat
+
                     if not stat.S_ISDIR(r_stat.st_mode):
                         # Not a dir, just get it
                         sftp.get(remote_path, local_path)
@@ -264,10 +269,10 @@ class SSHClient:
 
                 # It is a dir. Ensure local dir exists
                 os.makedirs(local_path, exist_ok=True)
-                
+
                 # Stack for iteration: (remote_dir, local_dir)
                 stack = [(remote_path, local_path)]
-                
+
                 while stack:
                     curr_r, curr_l = stack.pop()
                     # Ensure local dir
@@ -276,7 +281,7 @@ class SSHClient:
                             os.makedirs(curr_l)
                         except OSError as e:
                             raise IOError(f"Failed to create local directory {curr_l}: {e}") from e
-                        
+
                     try:
                         file_list = sftp.listdir_attr(curr_r)
                     except IOError as e:
@@ -285,14 +290,14 @@ class SSHClient:
                     for attr in file_list:
                         r_item = str(PurePosixPath(curr_r) / attr.filename)
                         l_item = os.path.join(curr_l, attr.filename)
-                        
+
                         if stat.S_ISDIR(attr.st_mode):
                             stack.append((r_item, l_item))
                         else:
                             # Apply filter if provided
                             if filter_callback and not filter_callback(r_item):
                                 continue
-                                
+
                             try:
                                 sftp.get(r_item, l_item)
                             except IOError as e:
@@ -309,64 +314,64 @@ class SSHClient:
         """
         Upload a file or directory to the remote host.
         If recursive is True, uploads a directory.
-        
+
         Raises:
             IOError: If upload fails.
         """
         sftp = await self._ensure_sftp()
-        
+
         # Ensure parent remote directory exists
         parent = str(PurePosixPath(remote_path).parent)
         if parent and parent not in (".", "/"):
-             await self.mkdir_p(parent)
+            await self.mkdir_p(parent)
 
         def _put():
             if recursive:
-                 if not os.path.isdir(local_path):
-                     # Not a dir, just put it
-                     try:
-                         sftp.put(local_path, remote_path)
-                     except IOError as e:
-                         raise IOError(f"Failed to upload {local_path} to {remote_path}: {e}") from e
-                     return
+                if not os.path.isdir(local_path):
+                    # Not a dir, just put it
+                    try:
+                        sftp.put(local_path, remote_path)
+                    except IOError as e:
+                        raise IOError(f"Failed to upload {local_path} to {remote_path}: {e}") from e
+                    return
 
-                 # It is a dir. Ensure remote dir exists
-                 try:
-                     sftp.mkdir(remote_path)
-                 except IOError:
-                     # Check if exists
-                     try:
-                         sftp.stat(remote_path)
-                     except IOError as e:
-                         raise IOError(f"Failed to create remote directory {remote_path}: {e}") from e
-                 
-                 # Walk local dir
-                 for root, dirs, files in os.walk(local_path):
-                     # Calculate relative path to mirror structure
-                     rel_root = os.path.relpath(root, local_path)
-                     remote_root = str(PurePosixPath(remote_path) / rel_root)
-                     if rel_root == ".":
-                         remote_root = remote_path
-                    
-                     # Create directories
-                     for d in dirs:
-                         r_dir = str(PurePosixPath(remote_root) / d)
-                         try:
-                             sftp.mkdir(r_dir)
-                         except IOError:
-                             try:
-                                 sftp.stat(r_dir)
-                             except IOError as e:
-                                 raise IOError(f"Failed to create remote directory {r_dir}: {e}") from e
-                     
-                     # Upload files
-                     for f in files:
-                         l_file = os.path.join(root, f)
-                         r_file = str(PurePosixPath(remote_root) / f)
-                         try:
+                # It is a dir. Ensure remote dir exists
+                try:
+                    sftp.mkdir(remote_path)
+                except IOError:
+                    # Check if exists
+                    try:
+                        sftp.stat(remote_path)
+                    except IOError as e:
+                        raise IOError(f"Failed to create remote directory {remote_path}: {e}") from e
+
+                # Walk local dir
+                for root, dirs, files in os.walk(local_path):
+                    # Calculate relative path to mirror structure
+                    rel_root = os.path.relpath(root, local_path)
+                    remote_root = str(PurePosixPath(remote_path) / rel_root)
+                    if rel_root == ".":
+                        remote_root = remote_path
+
+                    # Create directories
+                    for d in dirs:
+                        r_dir = str(PurePosixPath(remote_root) / d)
+                        try:
+                            sftp.mkdir(r_dir)
+                        except IOError:
+                            try:
+                                sftp.stat(r_dir)
+                            except IOError as e:
+                                raise IOError(f"Failed to create remote directory {r_dir}: {e}") from e
+
+                    # Upload files
+                    for f in files:
+                        l_file = os.path.join(root, f)
+                        r_file = str(PurePosixPath(remote_root) / f)
+                        try:
                             sftp.put(l_file, r_file)
-                         except IOError as e:
-                             raise IOError(f"Failed to upload {l_file} to {r_file}: {e}") from e
+                        except IOError as e:
+                            raise IOError(f"Failed to upload {l_file} to {r_file}: {e}") from e
 
             else:
                 try:

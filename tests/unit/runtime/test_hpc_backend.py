@@ -1,11 +1,13 @@
-import pytest
-import asyncio
 from unittest.mock import patch
+
+import pytest
+
+from matterstack.core.backend import JobState
+from matterstack.core.workflow import Task
 from matterstack.runtime.backends.hpc.backend import SlurmBackend
 from matterstack.runtime.backends.hpc.ssh import SSHConfig
-from matterstack.core.workflow import Task
-from matterstack.core.backend import JobState
 from tests.unit.runtime.hpc_mocks import MockSSHClient
+
 
 @pytest.fixture
 def mock_ssh():
@@ -33,12 +35,12 @@ async def test_submit_job(backend, mock_ssh):
     )
 
     job_id = await backend.submit(task)
-    
+
     assert job_id == "1000"
     assert "/scratch/test/job1/submit.sh" in mock_ssh.files
     assert "/scratch/test/job1/input.txt" in mock_ssh.files
     assert mock_ssh.files["/scratch/test/job1/input.txt"] == b"data"
-    
+
     # Verify script content (basic check)
     script = mock_ssh.files["/scratch/test/job1/submit.sh"].decode()
     assert "#SBATCH --job-name=job1" in script
@@ -103,7 +105,7 @@ async def test_submit_job_workdir_override_and_local_debug_dir(backend, mock_ssh
 async def test_poll_job(backend, mock_ssh):
     # Setup job in mock
     mock_ssh.jobs["123"] = mock_ssh.jobs.get("123") or type("Info", (), {"job_id": "123", "state": "RUNNING", "exit_code": "0:0", "reason": "None"})()
-    
+
     status = await backend.poll("123")
     assert status.state == JobState.RUNNING
 
@@ -117,18 +119,18 @@ async def test_get_logs(backend, mock_ssh):
     # Setup log files
     mock_ssh.files["/scratch/test/job1/stdout.txt"] = b"Hello World\n"
     mock_ssh.files["/scratch/test/job1/stderr.txt"] = b"No errors\n"
-    
-    # We need to ensure scontrol/sacct points to these. 
+
+    # We need to ensure scontrol/sacct points to these.
     # The current MockSSHClient.run implementation for scontrol returns fixed paths:
     # StdOut=stdout.txt StdErr=stderr.txt WorkDir=/tmp/work
     # So we need to match those paths in self.files or update the mock logic.
     # Let's override the file paths in mock_ssh to match what the mock returns for scontrol
-    
+
     mock_ssh.files["/tmp/work/stdout.txt"] = b"Hello World\n"
     mock_ssh.files["/tmp/work/stderr.txt"] = b"No errors\n"
 
     logs = await backend.get_logs("1000")
-    
+
     assert logs["stdout"] == "Hello World\n"
     assert logs["stderr"] == "No errors\n"
 

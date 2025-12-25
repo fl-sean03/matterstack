@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 class _RunOperationsMixin:
     """
     Mixin class providing run CRUD operations for SQLiteStateStore.
-    
+
     Expects the following attributes on self:
     - SessionLocal: SQLAlchemy sessionmaker instance
     """
@@ -44,7 +44,7 @@ class _RunOperationsMixin:
             created_at=metadata.created_at,
             status=metadata.status,
             tags=metadata.tags,
-            description=metadata.description
+            description=metadata.description,
         )
 
         with self.SessionLocal() as session:
@@ -59,14 +59,12 @@ class _RunOperationsMixin:
         with self.SessionLocal() as session:
             stmt = select(RunModel).where(RunModel.run_id == run_id)
             run_model = session.scalar(stmt)
-            
+
             if not run_model:
                 return None
-                
+
             return RunHandle(
-                run_id=run_model.run_id,
-                workspace_slug=run_model.workspace_slug,
-                root_path=Path(run_model.root_path)
+                run_id=run_model.run_id, workspace_slug=run_model.workspace_slug, root_path=Path(run_model.root_path)
             )
 
     def get_run_metadata(self, run_id: str) -> Optional[RunMetadata]:
@@ -76,15 +74,15 @@ class _RunOperationsMixin:
         with self.SessionLocal() as session:
             stmt = select(RunModel).where(RunModel.run_id == run_id)
             run_model = session.scalar(stmt)
-            
+
             if not run_model:
                 return None
-                
+
             return RunMetadata(
                 created_at=run_model.created_at,
                 status=run_model.status,
                 tags=run_model.tags,
-                description=run_model.description
+                description=run_model.description,
             )
 
     def get_run_status_reason(self, run_id: str) -> Optional[str]:
@@ -102,14 +100,14 @@ class _RunOperationsMixin:
         with self.SessionLocal() as session:
             stmt = select(RunModel).where(RunModel.run_id == run_id)
             run_model = session.scalar(stmt)
-            
+
             if not run_model:
                 raise ValueError(f"Run {run_id} not found.")
-                
+
             run_model.status = status
             if reason is not None:
                 run_model.status_reason = reason
-                
+
             session.commit()
 
     def get_run_status(self, run_id: str) -> Optional[str]:

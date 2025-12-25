@@ -5,17 +5,18 @@ Contains:
 - SelfTestCampaign: Minimal campaign for self-test verification
 - cmd_self_test: Run a self-test of the MatterStack installation
 """
+
 import sys
-import time
 import tempfile
+import time
 from pathlib import Path
-from typing import Optional, Any, Dict
+from typing import Any, Dict, Optional
 
 from matterstack.core.campaign import Campaign
-from matterstack.core.workflow import Workflow, Task
+from matterstack.core.workflow import Task, Workflow
 from matterstack.orchestration.run_lifecycle import initialize_run, step_run
-from matterstack.storage.state_store import SQLiteStateStore
 from matterstack.storage.export import build_evidence_bundle, export_evidence_bundle
+from matterstack.storage.state_store import SQLiteStateStore
 
 
 class SelfTestCampaign(Campaign):
@@ -25,12 +26,9 @@ class SelfTestCampaign(Campaign):
         # Initial plan: Create one dummy task
         if not state:
             wf = Workflow()
-            wf.add_task(Task(
-                task_id="smoke_test_task",
-                image="ubuntu:latest",
-                command="echo 'MatterStack Self-Test'",
-                files={}
-            ))
+            wf.add_task(
+                Task(task_id="smoke_test_task", image="ubuntu:latest", command="echo 'MatterStack Self-Test'", files={})
+            )
             return wf
         return None  # No further work
 
@@ -86,7 +84,7 @@ def cmd_self_test(args):
             export_evidence_bundle(bundle, export_path)
 
             if (export_path / "evidence" / "report.md").exists():
-                print(f"  [x] Evidence exported to temporary path")
+                print("  [x] Evidence exported to temporary path")
             else:
                 print(f"  [!] Evidence export failed: {(export_path / 'evidence' / 'report.md')} not found")
                 sys.exit(1)
@@ -96,5 +94,6 @@ def cmd_self_test(args):
         except Exception as e:
             print(f"\n[!] Self-test failed: {e}")
             import traceback
+
             traceback.print_exc()
             sys.exit(1)

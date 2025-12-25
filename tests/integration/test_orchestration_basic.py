@@ -2,8 +2,8 @@ import asyncio
 
 from matterstack.core.backend import JobState
 from matterstack.core.workflow import Task
-from matterstack.runtime.backends.local import LocalBackend
 from matterstack.orchestration.api import run_task_async
+from matterstack.runtime.backends.local import LocalBackend
 
 
 def test_run_task_async_with_local_backend(tmp_path):

@@ -80,8 +80,8 @@ def test_cli_step_passes_operator_registry_and_accepts_hpc_config_flag(
     - Ensure the CLI accepts --hpc-config on `step`
     - Ensure cmd_step builds and passes operator_registry into step_run()
     """
-    import matterstack.cli.main as cli_main
     import matterstack.cli.commands.run_management as run_mgmt
+    import matterstack.cli.main as cli_main
 
     run_id = "r1"
     ws = "ws"

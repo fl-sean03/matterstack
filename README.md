@@ -1,5 +1,7 @@
 # MatterStack: Materials Discovery Platform
 
+[![CI](https://github.com/fl-sean03/matterstack/actions/workflows/ci.yml/badge.svg)](https://github.com/fl-sean03/matterstack/actions/workflows/ci.yml)
+
 MatterStack is a workflow orchestration platform designed for materials science research. It connects computational resources, simulation engines, and decision-making logic.
 
 By automating campaigns—from high-throughput screening to active learning loops—MatterStack allows researchers to manage complex scientific workflows more efficiently.
@@ -69,6 +71,43 @@ Simulation of a self-driving laboratory environment for thin film synthesis. Ill
 
 ### 4. [Catalyst Discovery (Human-in-the-Loop)](workspaces/catalyst_human_in_loop)
 A catalyst design workflow that pauses for expert validation before proceeding to expensive compute steps. Demonstrates seamless human-AI collaboration.
+
+## Development
+
+### Quick Start
+
+```bash
+# Clone and install
+git clone https://github.com/fl-sean03/matterstack.git
+cd matterstack
+uv sync
+
+# Run tests
+uv run pytest tests/ -v
+
+# Run linting
+uv run ruff check matterstack/
+
+# Run type checking
+uv run mypy matterstack/ --ignore-missing-imports
+```
+
+### Pre-commit Hooks
+
+This project uses pre-commit for code quality:
+
+```bash
+uv run pre-commit install
+uv run pre-commit run --all-files
+```
+
+### Quality Gates
+
+All PRs must pass:
+- Tests: `uv run pytest tests/`
+- LOC limit: `./scripts/check_max_lines.sh` (500 lines max per file)
+- Self-test: `uv run matterstack self-test`
+- Lint (warning): `uv run ruff check matterstack/`
 
 ## Project Structure
 

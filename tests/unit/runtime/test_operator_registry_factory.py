@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from matterstack.config.operators import parse_operators_config_dict
 from matterstack.core.run import RunHandle
 from matterstack.runtime.backends.local import LocalBackend

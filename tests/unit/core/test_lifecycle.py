@@ -10,7 +10,6 @@ Tests cover:
 
 import logging
 from typing import List, Optional
-from unittest.mock import MagicMock, patch
 
 import pytest
 

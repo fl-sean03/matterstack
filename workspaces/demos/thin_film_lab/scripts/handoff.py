@@ -1,7 +1,7 @@
 import json
-import sys
 import logging
-import os
+import sys
+
 from matterstack.core.external import ExternalTaskWrapper
 
 # Configure logging
@@ -15,7 +15,7 @@ def main():
     2. Uses ExternalTaskWrapper to send request and wait for response.
     """
     logger.info("Starting Handoff Process...")
-    
+
     # 1. Read Simulation Results
     try:
         with open("sim_results.json", 'r') as f:
@@ -24,7 +24,7 @@ def main():
     except FileNotFoundError:
         logger.error("sim_results.json not found!")
         sys.exit(1)
-        
+
     # 2. Configure ExternalTaskWrapper
     # We pass the sim data as the request body
     config = {
@@ -34,11 +34,11 @@ def main():
         "poll_interval": 2.0,
         "timeout_minutes": 5
     }
-    
+
     # 3. Execute Wrapper
     wrapper = ExternalTaskWrapper(config)
     wrapper.run()
-    
+
     logger.info("Handoff complete. Robot finished.")
 
 if __name__ == "__main__":

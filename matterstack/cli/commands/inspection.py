@@ -7,16 +7,17 @@ Contains commands for inspecting run state:
 - cmd_monitor: TUI monitor
 - cmd_export_evidence: Export evidence bundle
 """
-import sys
-import logging
 
-from matterstack.storage.state_store import SQLiteStateStore
-from matterstack.storage.export import build_evidence_bundle, export_evidence_bundle
+import logging
+import sys
+
+from matterstack.cli.tui import CampaignMonitor
+from matterstack.cli.utils import find_run
+from matterstack.config.operator_wiring import format_operator_wiring_explain_line
 from matterstack.orchestration.diagnostics import get_run_frontier
 from matterstack.orchestration.run_lifecycle import list_active_runs
-from matterstack.config.operator_wiring import format_operator_wiring_explain_line
-from matterstack.cli.utils import find_run
-from matterstack.cli.tui import CampaignMonitor
+from matterstack.storage.export import build_evidence_bundle, export_evidence_bundle
+from matterstack.storage.state_store import SQLiteStateStore
 
 logger = logging.getLogger("cli.inspection")
 
@@ -99,6 +100,7 @@ def cmd_explain(args):
     except Exception as e:
         logger.error(f"Failed to explain run: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
@@ -134,6 +136,7 @@ def cmd_monitor(args):
     except Exception as e:
         logger.error(f"Monitor crashed: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
@@ -164,5 +167,6 @@ def cmd_export_evidence(args):
     except Exception as e:
         logger.error(f"Failed to export evidence: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

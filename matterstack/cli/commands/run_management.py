@@ -10,22 +10,23 @@ Contains commands for managing run lifecycle:
 - cmd_resume: Resume a run
 - cmd_revive: Revive terminal run
 """
-import sys
+
 import logging
-import time
 import random
+import sys
+import time
 from pathlib import Path
 
+from matterstack.cli.operator_registry import RegistryConfig, build_operator_registry
+from matterstack.cli.utils import find_run, load_workspace_context
+from matterstack.config.operator_wiring import resolve_operator_wiring
 from matterstack.orchestration.run_lifecycle import (
     initialize_run,
-    step_run,
     list_active_runs,
     run_until_completion,
+    step_run,
 )
 from matterstack.storage.state_store import SQLiteStateStore
-from matterstack.cli.utils import load_workspace_context, find_run
-from matterstack.cli.operator_registry import RegistryConfig, build_operator_registry
-from matterstack.config.operator_wiring import resolve_operator_wiring
 
 logger = logging.getLogger("cli.run_management")
 

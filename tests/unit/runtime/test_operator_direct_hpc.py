@@ -1,14 +1,13 @@
-import pytest
-import asyncio
-from pathlib import Path
 import json
-import uuid
-from typing import Dict, Any, Optional, List, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-from matterstack.core.workflow import Task, Workflow
+import pytest
+
+from matterstack.core.backend import ComputeBackend, JobState, JobStatus
+from matterstack.core.operators import ExternalRunStatus
 from matterstack.core.run import RunHandle
-from matterstack.core.operators import ExternalRunStatus, OperatorResult
-from matterstack.core.backend import ComputeBackend, JobStatus, JobState
+from matterstack.core.workflow import Task, Workflow
 from matterstack.runtime.operators.hpc import ComputeOperator as DirectHPCOperator
 from matterstack.runtime.task_manifest import iter_strings
 from matterstack.storage.state_store import SQLiteStateStore
@@ -16,6 +15,11 @@ from matterstack.storage.state_store import SQLiteStateStore
 # --- Mock Backend ---
 
 class MockComputeBackend(ComputeBackend):
+    @property
+    def is_local_execution(self) -> bool:
+        """Mock as remote backend (like SlurmBackend) to test remote workdir paths."""
+        return False
+
     def __init__(self):
         self.jobs: Dict[str, JobStatus] = {}
         self.files: Dict[str, Dict[str, str]] = {}  # job_id -> {filename: content}
@@ -190,17 +194,17 @@ def test_check_status(operator, run_handle, simple_task):
 def test_collect_results(operator, run_handle, simple_task):
     handle = operator.prepare_run(run_handle, simple_task)
     handle = operator.submit(handle)
-    
+
     # Add some output files to backend
     job_id = handle.external_id
     operator.backend.add_output_file(job_id, "results.csv", "a,b,c")
-    
+
     # Run collection
     result = operator.collect_results(handle)
-    
+
     assert result.task_id == simple_task.task_id
     assert "results.csv" in result.files
-    
+
     # Verify file content on disk
     full_path = run_handle.root_path / handle.relative_path
     assert (full_path / "results.csv").read_text() == "a,b,c"

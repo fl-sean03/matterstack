@@ -4,21 +4,23 @@ POLL phase logic for the run lifecycle.
 This module contains functions for polling active attempts and external runs,
 mapping status values, and looking up operators.
 """
+
 from __future__ import annotations
+
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
 
-from matterstack.core.operators import ExternalRunHandle, ExternalRunStatus
-from matterstack.core.operator_keys import (
-    resolve_operator_key_for_attempt,
-    legacy_operator_type_to_key,
-)
 from matterstack.core.lifecycle import (
     AttemptContext,
     AttemptLifecycleHook,
     fire_hook_safely,
 )
+from matterstack.core.operator_keys import (
+    legacy_operator_type_to_key,
+    resolve_operator_key_for_attempt,
+)
+from matterstack.core.operators import ExternalRunHandle, ExternalRunStatus
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +28,15 @@ logger = logging.getLogger(__name__)
 def task_status_from_external_status(s: ExternalRunStatus) -> str:
     """
     Map ExternalRunStatus to task status string.
-    
+
     Status mapping (attempt/external status -> task status):
     - SUBMITTED maps to WAITING_EXTERNAL for user-facing stability in v0.2.5.
     - CREATED maps to PENDING.
     - RUNNING, COMPLETED, FAILED, FAILED_INIT, CANCELLED map directly.
-    
+
     Args:
         s: The external run status.
-    
+
     Returns:
         The corresponding task status string.
     """
@@ -63,11 +65,11 @@ def lookup_operator_for_attempt(attempt: Any, operators: Dict[str, Any]) -> Opti
 
     Prefer canonical operator_key (v0.2.6+) when present, but fall back to
     legacy operator_type keys ("HPC", "Human", etc.) for older registries/tests.
-    
+
     Args:
         attempt: The attempt object with operator_type and optional operator_key.
         operators: The operator registry dict.
-    
+
     Returns:
         The operator instance if found, None otherwise.
     """
@@ -106,10 +108,10 @@ def poll_active_attempts(
 ) -> None:
     """
     Poll active attempts and update their status.
-    
+
     This is the v2 primary path for attempt-aware polling.
     Also detects stuck attempts (CREATED with no external_id past timeout).
-    
+
     Args:
         run_id: The run ID.
         store: The SQLiteStateStore instance.
@@ -118,7 +120,7 @@ def poll_active_attempts(
         stuck_timeout_seconds: Timeout in seconds to detect stuck attempts (default 1 hour).
     """
     from datetime import datetime, timedelta
-    
+
     active_attempts = store.get_active_attempts(run_id)
     cutoff = datetime.utcnow() - timedelta(seconds=stuck_timeout_seconds)
 
@@ -140,7 +142,7 @@ def poll_active_attempts(
                 status_reason=f"Stuck in CREATED state; no external_id after {stuck_timeout_seconds}s",
             )
             store.update_task_status(attempt.task_id, "FAILED")
-            
+
             # Fire on_fail lifecycle hook
             if lifecycle_hooks:
                 context = AttemptContext(
@@ -174,7 +176,7 @@ def poll_active_attempts(
                 task_status_from_external_status(ExternalRunStatus(attempt.status)),
             )
             continue
-        
+
         try:
             ext_handle = ExternalRunHandle(
                 task_id=attempt.task_id,
@@ -182,9 +184,7 @@ def poll_active_attempts(
                 external_id=attempt.external_id,
                 status=ExternalRunStatus(attempt.status),
                 operator_data=attempt.operator_data or {},
-                relative_path=Path(attempt.relative_path)
-                if attempt.relative_path
-                else None,
+                relative_path=Path(attempt.relative_path) if attempt.relative_path else None,
             )
 
             old_status = ext_handle.status
@@ -230,7 +230,7 @@ def poll_active_attempts(
                         operator_key=getattr(attempt, "operator_key", None),
                         attempt_index=getattr(attempt, "attempt_index", 1),
                     )
-                    
+
                     if updated_handle.status == ExternalRunStatus.COMPLETED:
                         fire_hook_safely(lifecycle_hooks, "on_complete", context, True)
                     elif updated_handle.status == ExternalRunStatus.FAILED:
@@ -240,14 +240,10 @@ def poll_active_attempts(
                         fire_hook_safely(lifecycle_hooks, "on_fail", context, str(error))
 
             # Heal/sync task status from attempt status (even if unchanged)
-            store.update_task_status(
-                attempt.task_id, task_status_from_external_status(updated_handle.status)
-            )
+            store.update_task_status(attempt.task_id, task_status_from_external_status(updated_handle.status))
 
         except Exception as e:
-            logger.error(
-                f"Error checking status for attempt {attempt.attempt_id} (task {attempt.task_id}): {e}"
-            )
+            logger.error(f"Error checking status for attempt {attempt.attempt_id} (task {attempt.task_id}): {e}")
 
 
 def poll_legacy_external_runs(
@@ -258,7 +254,7 @@ def poll_legacy_external_runs(
 ) -> None:
     """
     Poll legacy external runs (v1 fallback) for tasks that have no attempts.
-    
+
     Args:
         run_id: The run ID.
         store: The SQLiteStateStore instance.
@@ -266,7 +262,7 @@ def poll_legacy_external_runs(
         attempt_task_ids: Set of task IDs that already have attempts.
     """
     active_external = store.get_active_external_runs(run_id)
-    
+
     for ext_handle in active_external:
         if ext_handle.task_id in attempt_task_ids:
             continue
@@ -279,9 +275,7 @@ def poll_legacy_external_runs(
                 updated_handle = op.check_status(ext_handle)
 
                 if updated_handle.status != old_status:
-                    logger.info(
-                        f"Legacy External Run {ext_handle.task_id} transitioned to {updated_handle.status}"
-                    )
+                    logger.info(f"Legacy External Run {ext_handle.task_id} transitioned to {updated_handle.status}")
 
                 if updated_handle.status in [ExternalRunStatus.COMPLETED, ExternalRunStatus.FAILED]:
                     try:
@@ -292,9 +286,7 @@ def poll_legacy_external_runs(
                         if result.data:
                             updated_handle.operator_data["output_data"] = result.data
                     except Exception as e:
-                        logger.error(
-                            f"Failed to collect results for legacy external run {ext_handle.task_id}: {e}"
-                        )
+                        logger.error(f"Failed to collect results for legacy external run {ext_handle.task_id}: {e}")
 
                 store.update_external_run(updated_handle)
 

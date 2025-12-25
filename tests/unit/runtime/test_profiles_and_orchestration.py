@@ -1,11 +1,11 @@
 import asyncio
 from pathlib import Path
 
+from matterstack.config.profiles import load_profile
 from matterstack.core.backend import JobState
 from matterstack.core.workflow import Task
-from matterstack.runtime.backends.local import LocalBackend
 from matterstack.orchestration.api import run_task_async
-from matterstack.config.profiles import load_profile
+from matterstack.runtime.backends.local import LocalBackend
 
 
 def _write_local_profile_config(tmp_path: Path, dry_run: bool) -> Path:

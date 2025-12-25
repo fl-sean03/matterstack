@@ -17,6 +17,7 @@ from sqlalchemy import insert, select, text, update
 from sqlalchemy.orm import Session
 
 from matterstack.storage.schema import (
+    CURRENT_SCHEMA_VERSION,
     Base,
     ExternalRunModel,
     RunModel,
@@ -38,7 +39,7 @@ logger = logging.getLogger(__name__)
 class _MigrationsMixin:
     """
     Mixin class providing schema migration methods for SQLiteStateStore.
-    
+
     Expects the following attributes on self:
     - db_path: Path to the SQLite database file
     - engine: SQLAlchemy Engine instance
@@ -47,7 +48,9 @@ class _MigrationsMixin:
     # Type hints for attributes provided by SQLiteStateStore
     if TYPE_CHECKING:
         from pathlib import Path
+
         from sqlalchemy.orm import sessionmaker
+
         db_path: Path
         engine: Engine
         SessionLocal: sessionmaker
@@ -80,19 +83,13 @@ class _MigrationsMixin:
         # Build run_id -> created_at map (stable created_at for migrated attempts)
         run_created_at: Dict[str, datetime] = {
             run_id: created_at
-            for run_id, created_at in session.execute(
-                select(RunModel.run_id, RunModel.created_at)
-            ).all()
+            for run_id, created_at in session.execute(select(RunModel.run_id, RunModel.created_at)).all()
         }
 
         external_runs = session.execute(select(ExternalRunModel)).scalars().all()
 
         for er in external_runs:
-            attempt_id = str(
-                uuid.uuid5(
-                    TASK_ATTEMPT_MIGRATION_NAMESPACE, f"{er.run_id}:{er.task_id}"
-                )
-            )
+            attempt_id = str(uuid.uuid5(TASK_ATTEMPT_MIGRATION_NAMESPACE, f"{er.run_id}:{er.task_id}"))
 
             created_at = run_created_at.get(er.run_id)
 
@@ -119,9 +116,7 @@ class _MigrationsMixin:
 
             # Set current attempt pointer (safe after ALTER TABLE)
             session.execute(
-                update(TaskModel)
-                .where(TaskModel.task_id == er.task_id)
-                .values(current_attempt_id=attempt_id)
+                update(TaskModel).where(TaskModel.task_id == er.task_id).values(current_attempt_id=attempt_id)
             )
 
         info.value = "2"
@@ -134,9 +129,6 @@ class _MigrationsMixin:
         v3 adds `task_attempts.operator_key` (nullable) to persist canonical operator routing keys
         (e.g. "hpc.default") for provenance and CLI/evidence stability.
         """
-        # Import here to avoid circular imports - CURRENT_SCHEMA_VERSION is in state_store.py
-        from matterstack.storage.state_store import CURRENT_SCHEMA_VERSION
-
         logger.info(f"Migrating database schema v2 -> v3 at {self.db_path}")
 
         # Ensure latest tables exist for *new* DBs (additive; does not add columns on existing tables).
@@ -155,8 +147,6 @@ class _MigrationsMixin:
         v4 adds `tasks.operator_key` (nullable) for first-class operator routing,
         enabling declarative operator specification on Task models.
         """
-        from matterstack.storage.state_store import CURRENT_SCHEMA_VERSION
-
         logger.info(f"Migrating database schema v3 -> v4 at {self.db_path}")
 
         # Ensure latest tables exist (additive; does not add columns on existing tables).

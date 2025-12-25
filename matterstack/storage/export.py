@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -96,12 +95,8 @@ def build_evidence_bundle(run_handle: RunHandle, store: "SQLiteStateStore") -> E
             current_attempt = store.get_current_attempt(task.task_id) or attempts[-1]
 
             # Export full attempt history
-            task_info["attempts"] = [
-                _attempt_to_dict(a, run_handle.root_path) for a in attempts
-            ]
-            task_info["current_attempt"] = _attempt_to_dict(
-                current_attempt, run_handle.root_path
-            )
+            task_info["attempts"] = [_attempt_to_dict(a, run_handle.root_path) for a in attempts]
+            task_info["current_attempt"] = _attempt_to_dict(current_attempt, run_handle.root_path)
 
             # Stable task summary fields derived from current attempt
             status_val = current_attempt.status
@@ -212,10 +207,11 @@ def build_evidence_bundle(run_handle: RunHandle, store: "SQLiteStateStore") -> E
 
     return bundle
 
+
 def export_evidence_bundle(bundle: EvidenceBundle, run_root: Path) -> None:
     """
     Serialize the bundle to evidence/bundle.json and generate a evidence/report.md.
-    
+
     Args:
         bundle: The EvidenceBundle to export.
         run_root: Root directory of the run.
@@ -237,14 +233,15 @@ def export_evidence_bundle(bundle: EvidenceBundle, run_root: Path) -> None:
     json_path = evidence_dir / "bundle.json"
     with json_path.open("w") as f:
         f.write(bundle.model_dump_json(indent=2))
-        
+
     # 2. Generate Markdown Report
     report_path = evidence_dir / "report.md"
     report_content = _generate_markdown_report(bundle, run_root=run_root)
     report_path.write_text(report_content)
-    
+
     # Update bundle with report content (optional, but good for completeness if re-used)
     bundle.report_content = report_content
+
 
 def _generate_markdown_report(bundle: EvidenceBundle, *, run_root: Optional[Path] = None) -> str:
     """Helper to generate MD content."""
@@ -252,7 +249,7 @@ def _generate_markdown_report(bundle: EvidenceBundle, *, run_root: Optional[Path
     lines.append(f"# Evidence Report: Run {bundle.run_id}")
     lines.append(f"**Workspace:** {bundle.workspace_slug}")
     lines.append(f"**Generated At:** {bundle.generated_at.isoformat()}")
-    
+
     # Run Status Header
     status_icon = "✅" if bundle.is_complete else "❌" if bundle.run_status == "FAILED" else "⚠️"
     lines.append(f"**Status:** {status_icon} {bundle.run_status}")
@@ -284,32 +281,34 @@ def _generate_markdown_report(bundle: EvidenceBundle, *, run_root: Optional[Path
 
     # Stats
     counts = bundle.task_counts
-    lines.append(f"**Progress:** {counts.get('completed', 0)}/{counts.get('total', 0)} Tasks Completed ({counts.get('failed', 0)} Failed)")
+    lines.append(
+        f"**Progress:** {counts.get('completed', 0)}/{counts.get('total', 0)} Tasks Completed ({counts.get('failed', 0)} Failed)"
+    )
     lines.append("")
-    
+
     lines.append("## Tasks Summary")
     tasks = bundle.data.get("tasks", {})
-    
+
     if not tasks:
         lines.append("_No tasks found._")
     else:
         # Table Header
         lines.append("| Task ID | Status | Operator | Results |")
         lines.append("|---|---|---|---|")
-        
+
         for task_id, info in tasks.items():
             status = info.get("status", "UNKNOWN")
             op_type = info.get("operator_type", "-")
-            
+
             # Format simple results string
             results = info.get("results", {})
-            results_str = ", ".join(f"{k}={v}" for k,v in results.items()) if results else "-"
+            results_str = ", ".join(f"{k}={v}" for k, v in results.items()) if results else "-"
             # Truncate if too long
             if len(results_str) > 50:
                 results_str = results_str[:47] + "..."
-                
+
             lines.append(f"| {task_id} | {status} | {op_type} | {results_str} |")
-            
+
     lines.append("")
     lines.append("## Artifacts")
     if not bundle.artifacts:
@@ -317,5 +316,5 @@ def _generate_markdown_report(bundle: EvidenceBundle, *, run_root: Optional[Path
     else:
         for key, path in bundle.artifacts.items():
             lines.append(f"- **{key}**: `{path}`")
-            
+
     return "\n".join(lines)

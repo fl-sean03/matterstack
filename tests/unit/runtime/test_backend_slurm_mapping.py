@@ -1,6 +1,8 @@
 import pytest
+
 from matterstack.core.backend import JobState
 from matterstack.runtime.backends.hpc.slurm import _map_slurm_state
+
 
 @pytest.mark.parametrize("slurm_state,expected", [
     ("PENDING", JobState.QUEUED),

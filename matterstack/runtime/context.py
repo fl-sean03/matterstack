@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict
 
+
 @dataclass
 class HPCClient:
     # v0: local-only, no real scheduler integration yet
@@ -8,11 +9,13 @@ class HPCClient:
         # TODO: implement in v1 if needed
         return {"status": "completed"}
 
+
 @dataclass
 class LabClient:
     # v0 stub
     def create_work_order(self, **kwargs) -> Any:
         return {"id": "WO-0001", "status": "pending"}
+
 
 @dataclass
 class RuntimeContext:

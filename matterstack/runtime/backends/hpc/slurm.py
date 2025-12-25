@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from typing import Optional
 import logging
+from typing import Optional
+
 from ....core.backend import JobState, JobStatus
-from .ssh import SSHClient, CommandResult
+from .ssh import CommandResult, SSHClient
 
 logger = logging.getLogger(__name__)
+
 
 def _parse_sacct_line(line: str) -> Optional[JobStatus]:
     """
@@ -29,12 +31,7 @@ def _parse_sacct_line(line: str) -> Optional[JobStatus]:
         except (ValueError, IndexError):
             exit_code = None
 
-    return JobStatus(
-        job_id=job_id,
-        state=state,
-        exit_code=exit_code,
-        reason=None
-    )
+    return JobStatus(job_id=job_id, state=state, exit_code=exit_code, reason=None)
 
 
 def _map_slurm_state(raw_state: str) -> JobState:
@@ -48,7 +45,7 @@ def _map_slurm_state(raw_state: str) -> JobState:
     # Map PENDING, REQUEUED -> QUEUED
     if s.startswith("PENDING") or s.startswith("REQUEUED") or s == "PD":
         return JobState.QUEUED
-    
+
     # Map RUNNING, COMPLETING -> RUNNING
     # CG = Completing, R = Running
     if s.startswith("RUNNING") or s.startswith("COMPLETING") or s in {"R", "CG"}:
@@ -63,7 +60,7 @@ def _map_slurm_state(raw_state: str) -> JobState:
     # F = Failed, TO = Timeout, NF = Node Fail, BF = Boot Fail
     error_states = {"FAILED", "TIMEOUT", "NODE_FAIL", "BOOT_FAIL", "OUT_OF_MEMORY", "DEADLINE"}
     error_codes = {"F", "TO", "NF", "BF", "OOM", "DL"}
-    
+
     if any(s.startswith(st) for st in error_states) or s in error_codes:
         return JobState.COMPLETED_ERROR
 
@@ -96,9 +93,7 @@ async def submit_job(ssh: SSHClient, workspace: str, batch_script_rel_path: str)
     result: CommandResult = await ssh.run(cmd, cwd=workspace)
 
     if result.exit_status != 0:
-        raise RuntimeError(
-            f"sbatch failed with status {result.exit_status}: {result.stderr}"
-        )
+        raise RuntimeError(f"sbatch failed with status {result.exit_status}: {result.stderr}")
 
     # Typical sbatch output: "Submitted batch job 123456"
     for line in result.stdout.splitlines():
@@ -118,10 +113,7 @@ async def get_job_status(ssh: SSHClient, job_id: str) -> JobStatus:
     Query Slurm for job status using sacct, with squeue as a fallback.
     """
     # First try sacct
-    sacct_cmd = (
-        f"sacct -j {job_id} --format=JobID,State,ExitCode,Start,End,Elapsed "
-        "--parsable2 --noheader"
-    )
+    sacct_cmd = f"sacct -j {job_id} --format=JobID,State,ExitCode,Start,End,Elapsed --parsable2 --noheader"
     # logger.debug(f"Running sacct: {sacct_cmd}")
     sacct_res: CommandResult = await ssh.run(sacct_cmd)
 
@@ -149,7 +141,7 @@ async def get_job_status(ssh: SSHClient, job_id: str) -> JobStatus:
     if squeue_res.exit_status == 0:
         if squeue_res.stdout.strip():
             logger.info(f"squeue output for {job_id}: {squeue_res.stdout.strip()}")
-        
+
         for line in squeue_res.stdout.splitlines():
             line = line.strip()
             if not line:
@@ -159,25 +151,15 @@ async def get_job_status(ssh: SSHClient, job_id: str) -> JobStatus:
                 continue
             jid, state_raw, elapsed_raw, reason = parts[:4]
             state = _normalize_state_from_squeue(state_raw)
-            
+
             logger.info(f"Parsed squeue status for {job_id}: {state}")
-            return JobStatus(
-                job_id=jid,
-                state=state,
-                reason=reason or None,
-                exit_code=None
-            )
+            return JobStatus(job_id=jid, state=state, reason=reason or None, exit_code=None)
     else:
         logger.warning(f"squeue failed exit code {squeue_res.exit_status}: {squeue_res.stderr}")
 
     # If both sacct and squeue fail, return LOST state
     logger.warning(f"Job {job_id} not found in sacct or squeue (LOST)")
-    return JobStatus(
-        job_id=job_id,
-        state=JobState.LOST,
-        reason="Job not found in sacct or squeue",
-        exit_code=None
-    )
+    return JobStatus(job_id=job_id, state=JobState.LOST, reason="Job not found in sacct or squeue", exit_code=None)
 
 
 async def get_job_io_paths(ssh: SSHClient, job_id: str) -> dict[str, str]:
@@ -189,9 +171,9 @@ async def get_job_io_paths(ssh: SSHClient, job_id: str) -> dict[str, str]:
 
     # 1. Try scontrol (active jobs)
     # Output format is typically `Key=Value` pairs, separated by spaces or newlines.
-    cmd = f"scontrol show job {job_id} -o" # -o for one line per job
+    cmd = f"scontrol show job {job_id} -o"  # -o for one line per job
     res = await ssh.run(cmd)
-    
+
     if res.exit_status == 0:
         # Parse key=value pairs
         # We need to handle quoted values if any, but simplistic split might work for paths
@@ -214,7 +196,7 @@ async def get_job_io_paths(ssh: SSHClient, job_id: str) -> dict[str, str]:
     # We request wide columns to avoid truncation
     cmd = f"sacct -j {job_id} -o WorkDir%256,StdOut%256,StdErr%256 --parsable2 --noheader"
     res = await ssh.run(cmd)
-    
+
     if res.exit_status == 0:
         lines = res.stdout.strip().splitlines()
         if lines:

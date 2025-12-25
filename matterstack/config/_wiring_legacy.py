@@ -4,6 +4,7 @@ Internal legacy support for operator wiring.
 This module contains functions for generating operator wiring configurations
 from legacy CLI inputs (--hpc-config, --profile).
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple

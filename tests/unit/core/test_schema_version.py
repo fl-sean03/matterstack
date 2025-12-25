@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select, text
@@ -13,16 +12,17 @@ from matterstack.storage.state_store import (
     SQLiteStateStore,
 )
 
+
 def test_schema_initialization(tmp_path):
     """
     Test that a fresh database is initialized with the correct schema version.
     """
     db_path = tmp_path / "state.sqlite"
     store = SQLiteStateStore(db_path)
-    
+
     # Check that file exists
     assert db_path.exists()
-    
+
     # Check content manually
     engine = create_engine(f"sqlite:///{db_path}")
     with Session(engine) as session:
@@ -36,10 +36,10 @@ def test_schema_check_pass(tmp_path):
     Test that opening an existing valid database passes.
     """
     db_path = tmp_path / "state.sqlite"
-    
+
     # 1. Create and init
     store1 = SQLiteStateStore(db_path)
-    
+
     # 2. Re-open
     store2 = SQLiteStateStore(db_path)
     # Should not raise

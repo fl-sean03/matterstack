@@ -1,11 +1,14 @@
-import pytest
 import asyncio
 from unittest.mock import patch
-from matterstack.config.profiles import load_profiles, ExecutionProfile
-from matterstack.orchestration.api import run_task_async
-from matterstack.core.workflow import Task
+
+import pytest
+
+from matterstack.config.profiles import load_profiles
 from matterstack.core.backend import JobState
+from matterstack.core.workflow import Task
+from matterstack.orchestration.api import run_task_async
 from tests.unit.runtime.hpc_mocks import MockSSHClient
+
 
 @pytest.fixture
 def mock_ssh():
@@ -47,32 +50,32 @@ async def test_slurm_profile_execution(mock_ssh, tmp_path):
     # but run_task_async takes a backend instance or constructs one.
     # Let's verify run_task_async with an explicit backend first, or check if we can pass a profile.
     # Looking at api.py, run_task_async takes (task, profile_name or backend).
-    
+
     task = Task(
         task_id="integration_job",
         command="echo 'running integration'",
         image="",
         files={"config.ini": "mode=test"}
     )
-    
+
     # We need to ensure the orchestration layer picks up our mocked backend.
     # Since run_task_async(..., profile_name="test_slurm") will call load_profile -> create_backend -> SSHClient.connect,
     # and we have patched SSHClient.connect, this should work seamlessly.
-    
-    # However, run_task_async might need a context or similar. 
+
+    # However, run_task_async might need a context or similar.
     # Let's import it and check signature briefly (I recall reading it).
     # It returns a result object.
-    
-    # Note: run_task_async is a high level helper. 
-    # If it polls, we need the job to complete. 
+
+    # Note: run_task_async is a high level helper.
+    # If it polls, we need the job to complete.
     # Our MockSSHClient submits jobs as PENDING.
     # We need a way to advance the job state during the orchestration run?
     # Or we just test submission if run_task_async returns early?
     # Usually run_task_async waits for completion.
-    
+
     # To handle the waiting loop, we can start a background task that updates the job state
     # after a short delay.
-    
+
     async def simulate_cluster():
         await asyncio.sleep(0.5)
         # Find the job and mark completed
@@ -86,14 +89,14 @@ async def test_slurm_profile_execution(mock_ssh, tmp_path):
                 mock_ssh.jobs[jid].state = "COMPLETED"
 
     simulator = asyncio.create_task(simulate_cluster())
-    
+
     # Run the task
     # We must patch load_profiles or pass the config path if supported by api?
     # api.run_task_async signature: (task: Task, profile: Union[str, ExecutionProfile] = None, ...)
     # If we pass the profile object we loaded, it skips reloading config from disk default locations.
-    
+
     result = await run_task_async(task, profile=profile)
-    
+
     await simulator
 
     # result.status is a JobStatus object

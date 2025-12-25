@@ -1,11 +1,12 @@
 from __future__ import annotations
-import os
-import asyncio
-from typing import Optional, Dict, List, Any
-from pathlib import PurePosixPath, Path
-from dataclasses import dataclass
 
-from matterstack.runtime.backends.hpc.ssh import SSHClient, CommandResult, SSHConfig
+import os
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Dict, List, Optional
+
+from matterstack.runtime.backends.hpc.ssh import CommandResult, SSHConfig
+
 
 @dataclass
 class JobInfo:
@@ -41,13 +42,13 @@ class MockSSHClient:
             self.cmds_executed.append(command)
         else:
             self.cmds_executed.append(f"[cwd={cwd}] {command}")
-        
+
         # 1. Handle sbatch
         if command.startswith("sbatch "):
             # Format: sbatch script.sh
             # We assume success and return "Submitted batch job <id>"
             script_path = command.split(" ", 1)[1].strip()
-            
+
             # Verify script exists (optional, but good for realism)
             full_path = self._resolve_path(script_path, cwd)
             if full_path not in self.files:
@@ -56,7 +57,7 @@ class MockSSHClient:
             job_id = str(self.job_counter)
             self.job_counter += 1
             self.jobs[job_id] = JobInfo(job_id, "PENDING")
-            
+
             return CommandResult(f"Submitted batch job {job_id}\n", "", 0)
 
         # 2. Handle sacct
@@ -68,11 +69,11 @@ class MockSSHClient:
                 if part == "-j" and i + 1 < len(parts):
                     job_id = parts[i+1]
                     break
-            
+
             if not job_id:
                 # Maybe fallback or empty
                 return CommandResult("", "", 0)
-                
+
             if job_id not in self.jobs:
                 return CommandResult("", "", 0) # Job not found in history
 
@@ -91,10 +92,10 @@ class MockSSHClient:
                 if part == "-j" and i + 1 < len(parts):
                     job_id = parts[i+1]
                     break
-            
+
             if not job_id or job_id not in self.jobs:
                 return CommandResult("", "", 0)
-            
+
             info = self.jobs[job_id]
             # State mapping for squeue (simplified)
             short_state = {
@@ -164,7 +165,7 @@ class MockSSHClient:
             # It's a directory
             for root, _, files in os.walk(local_path):
                 rel_root = os.path.relpath(root, local_path)
-                
+
                 # Determine remote base for this root
                 if rel_root == ".":
                      curr_remote_dir = remote_path
@@ -186,7 +187,7 @@ class MockSSHClient:
     ) -> None:
         # Determine if remote_path acts as a file or directory
         is_exact_file = remote_path in self.files
-        
+
         # Check if it has "children"
         prefix = remote_path if remote_path.endswith("/") else f"{remote_path}/"
         has_children = any(k.startswith(prefix) for k in self.files)
@@ -213,7 +214,7 @@ class MockSSHClient:
 
                 found_any = True
                 rel = r_path[len(prefix):] # Path inside dir
-                
+
                 l_file = os.path.join(local_path, rel)
                 os.makedirs(os.path.dirname(l_file), exist_ok=True)
                 with open(l_file, "wb") as f:

@@ -32,6 +32,18 @@ class ComputeBackend(ABC):
     Abstract interface for executing Tasks on a compute resource.
     """
 
+    @property
+    @abstractmethod
+    def is_local_execution(self) -> bool:
+        """
+        Return True if this backend executes tasks locally (same machine).
+
+        Used by operators to determine path handling behavior:
+        - Local backends: use local filesystem paths directly
+        - Remote backends: use remote workspace paths and download results
+        """
+        pass
+
     @abstractmethod
     async def submit(
         self,
@@ -70,12 +82,12 @@ class ComputeBackend(ABC):
         local_path: str,
         include_patterns: Optional[list[str]] = None,
         exclude_patterns: Optional[list[str]] = None,
-        workdir_override: Optional[str] = None
+        workdir_override: Optional[str] = None,
     ) -> None:
         """
         Download a file or directory from the job's workspace.
         If remote_path is ".", download the entire workspace.
-        
+
         Args:
             job_id: The ID of the job.
             remote_path: Path relative to job workspace.
@@ -92,7 +104,7 @@ class ComputeBackend(ABC):
         Cancel a running job.
         """
         pass
-    
+
     @abstractmethod
     async def get_logs(self, job_id: str) -> Dict[str, str]:
         """

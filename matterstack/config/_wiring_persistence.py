@@ -4,6 +4,7 @@ Internal persistence functions for operator wiring.
 This module contains functions for persisting and managing operator wiring snapshots,
 including history tracking and metadata management.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -12,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from ._wiring_types import OperatorWiringSource, _ENV_OPERATORS_CONFIG
+from ._wiring_types import _ENV_OPERATORS_CONFIG, OperatorWiringSource
 
 
 def _utc_now_iso() -> str:
@@ -178,7 +179,10 @@ def _persist_snapshot_bytes(
                 sha256=existing_sha,
                 resolved_path=resolved_path,
                 snapshot_path=snapshot_yaml_path,
-                details={"attempted_sha256": desired_sha, "note": "Override refused; rerun with --force-wiring-override"},
+                details={
+                    "attempted_sha256": desired_sha,
+                    "note": "Override refused; rerun with --force-wiring-override",
+                },
             )
             raise ValueError(
                 "Refusing to override persisted operator wiring for this run. "

@@ -4,6 +4,7 @@ Config snapshot utilities for HPC operators.
 This module provides functionality for creating attempt-scoped configuration
 snapshots with deterministic hashing for reproducibility.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -42,13 +43,7 @@ def _compute_combined_config_hash(
         )
 
     for m in sorted(missing_meta, key=lambda x: str(x.get("snapshot_path", ""))):
-        lines.append(
-            "MISSING\t"
-            + str(m.get("snapshot_path", ""))
-            + "\t"
-            + str(m.get("source", ""))
-            + "\n"
-        )
+        lines.append("MISSING\t" + str(m.get("snapshot_path", "")) + "\t" + str(m.get("source", "")) + "\n")
 
     return _sha256_bytes("".join(lines).encode("utf-8"))
 
@@ -122,9 +117,7 @@ def write_attempt_config_snapshot(run_root: Path, attempt_dir: Path) -> Dict[str
         "missing": missing_meta,
         "combined_hash": combined_hash,
     }
-    (snapshot_dir / "manifest.json").write_text(
-        json.dumps(hash_manifest, indent=2, sort_keys=True) + "\n"
-    )
+    (snapshot_dir / "manifest.json").write_text(json.dumps(hash_manifest, indent=2, sort_keys=True) + "\n")
 
     # This is what we persist in DB (small metadata only; no blobs).
     return {

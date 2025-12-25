@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 class _ExternalRunOperationsMixin:
     """
     Mixin class providing external run operations for SQLiteStateStore (v1 legacy).
-    
+
     Expects the following attributes on self:
     - SessionLocal: SQLAlchemy sessionmaker instance
     """
@@ -39,7 +39,7 @@ class _ExternalRunOperationsMixin:
             # Check if exists first to avoid PK violation if re-registering
             stmt = select(ExternalRunModel).where(ExternalRunModel.task_id == handle.task_id)
             existing = session.scalar(stmt)
-            
+
             if existing:
                 # Update logic could go here if needed, but usually we just update status later
                 # For register, if it exists, we might want to ensure properties match or error out
@@ -57,7 +57,7 @@ class _ExternalRunOperationsMixin:
                     external_id=handle.external_id,
                     status=handle.status.value,
                     operator_data=handle.operator_data,
-                    relative_path=str(handle.relative_path) if handle.relative_path else None
+                    relative_path=str(handle.relative_path) if handle.relative_path else None,
                 )
                 session.add(model)
             session.commit()
@@ -69,15 +69,15 @@ class _ExternalRunOperationsMixin:
         with self.SessionLocal() as session:
             stmt = select(ExternalRunModel).where(ExternalRunModel.task_id == handle.task_id)
             model = session.scalar(stmt)
-            
+
             if not model:
                 raise ValueError(f"External run for task {handle.task_id} not found.")
-            
+
             model.external_id = handle.external_id
             model.status = handle.status.value
             model.operator_data = handle.operator_data
             model.relative_path = str(handle.relative_path) if handle.relative_path else None
-            
+
             session.commit()
 
     def get_external_run(self, task_id: str) -> Optional[ExternalRunHandle]:
@@ -87,17 +87,17 @@ class _ExternalRunOperationsMixin:
         with self.SessionLocal() as session:
             stmt = select(ExternalRunModel).where(ExternalRunModel.task_id == task_id)
             model = session.scalar(stmt)
-            
+
             if not model:
                 return None
-            
+
             return ExternalRunHandle(
                 task_id=model.task_id,
                 operator_type=model.operator_type,
                 external_id=model.external_id,
                 status=ExternalRunStatus(model.status),
                 operator_data=model.operator_data,
-                relative_path=Path(model.relative_path) if model.relative_path else None
+                relative_path=Path(model.relative_path) if model.relative_path else None,
             )
 
     def get_active_external_runs(self, run_id: str) -> List[ExternalRunHandle]:
@@ -108,16 +108,15 @@ class _ExternalRunOperationsMixin:
         terminal_states = [
             ExternalRunStatus.COMPLETED.value,
             ExternalRunStatus.FAILED.value,
-            ExternalRunStatus.CANCELLED.value
+            ExternalRunStatus.CANCELLED.value,
         ]
-        
+
         with self.SessionLocal() as session:
             stmt = select(ExternalRunModel).where(
-                ExternalRunModel.run_id == run_id,
-                ExternalRunModel.status.not_in(terminal_states)
+                ExternalRunModel.run_id == run_id, ExternalRunModel.status.not_in(terminal_states)
             )
             models = session.scalars(stmt).all()
-            
+
             return [
                 ExternalRunHandle(
                     task_id=m.task_id,
@@ -125,7 +124,7 @@ class _ExternalRunOperationsMixin:
                     external_id=m.external_id,
                     status=ExternalRunStatus(m.status),
                     operator_data=m.operator_data,
-                    relative_path=Path(m.relative_path) if m.relative_path else None
+                    relative_path=Path(m.relative_path) if m.relative_path else None,
                 )
                 for m in models
             ]

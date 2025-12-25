@@ -268,10 +268,10 @@ def test_parse_operators_config_complete_example(tmp_path: Path) -> None:
         }
     }
     parsed = parse_operators_config_dict(cfg, path=tmp_path / "operators.yaml")
-    
+
     # Verify defaults
     assert parsed.defaults.max_concurrent_global == 50
-    
+
     # Verify operator limits
     assert parsed.operators["hpc.gpu"].max_concurrent == 5
     assert parsed.operators["hpc.cpu"].max_concurrent == 30

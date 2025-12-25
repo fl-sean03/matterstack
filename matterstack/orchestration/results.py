@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
+from ..core.backend import JobState, JobStatus
 from ..core.workflow import Task, Workflow
-from ..core.backend import JobStatus, JobState
 
 
 @dataclass
@@ -40,9 +40,7 @@ class WorkflowResult:
         """Subset of tasks that ended in JobState.COMPLETED_ERROR."""
 
         return {
-            task_id: result
-            for task_id, result in self.tasks.items()
-            if result.status.state == JobState.COMPLETED_ERROR
+            task_id: result for task_id, result in self.tasks.items() if result.status.state == JobState.COMPLETED_ERROR
         }
 
     @property
@@ -50,9 +48,7 @@ class WorkflowResult:
         """Subset of tasks that ended in JobState.COMPLETED_OK."""
 
         return {
-            task_id: result
-            for task_id, result in self.tasks.items()
-            if result.status.state == JobState.COMPLETED_OK
+            task_id: result for task_id, result in self.tasks.items() if result.status.state == JobState.COMPLETED_OK
         }
 
     @property
@@ -67,7 +63,7 @@ class WorkflowResult:
         if JobState.COMPLETED_ERROR in states:
             # If some tasks succeeded but others failed, it's still an error state for the whole workflow
             return JobState.COMPLETED_ERROR
-            
+
         if JobState.CANCELLED in states:
             return JobState.CANCELLED
         if states == {JobState.COMPLETED_OK}:

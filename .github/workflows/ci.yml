@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  test:
+    name: Tests & Quality Gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+      
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+      
+      - name: Sync dependencies
+        run: uv sync
+      
+      - name: Verify lockfile
+        run: uv lock --check
+      
+      - name: Run tests
+        run: uv run pytest tests/ -v --tb=short
+      
+      - name: Check line limits
+        run: ./scripts/check_max_lines.sh
+      
+      - name: Run self-test
+        run: uv run matterstack self-test
+
+  lint:
+    name: Lint (Warning)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - run: uv sync
+      
+      - name: Ruff check
+        run: |
+          echo "::notice::Lint errors are warnings only"
+          uv run ruff check matterstack/ --output-format=github || true
+      
+      - name: Mypy check
+        run: |
+          echo "::notice::Type errors are warnings only"
+          uv run mypy matterstack/ --ignore-missing-imports || true

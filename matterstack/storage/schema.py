@@ -4,17 +4,21 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+# Current schema version for the database.
+# This is the canonical location for schema version; other modules should import from here.
+CURRENT_SCHEMA_VERSION = "4"
 
 
 class Base(DeclarativeBase):
@@ -53,15 +57,9 @@ class RunModel(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Relationships
-    tasks: Mapped[List["TaskModel"]] = relationship(
-        back_populates="run", cascade="all, delete-orphan"
-    )
-    external_runs: Mapped[List["ExternalRunModel"]] = relationship(
-        back_populates="run", cascade="all, delete-orphan"
-    )
-    task_attempts: Mapped[List["TaskAttemptModel"]] = relationship(
-        back_populates="run", cascade="all, delete-orphan"
-    )
+    tasks: Mapped[List["TaskModel"]] = relationship(back_populates="run", cascade="all, delete-orphan")
+    external_runs: Mapped[List["ExternalRunModel"]] = relationship(back_populates="run", cascade="all, delete-orphan")
+    task_attempts: Mapped[List["TaskAttemptModel"]] = relationship(back_populates="run", cascade="all, delete-orphan")
 
 
 class TaskModel(Base):
@@ -85,18 +83,14 @@ class TaskModel(Base):
     cores: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
     memory_gb: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
     gpus: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
-    time_limit_minutes: Mapped[Optional[int]] = mapped_column(
-        Integer, nullable=True, default=None
-    )
+    time_limit_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
 
     # Behavior
     allow_dependency_failure: Mapped[bool] = mapped_column(Boolean, default=False)
     allow_failure: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Selective Download
-    download_patterns: Mapped[Optional[Dict[str, List[str]]]] = mapped_column(
-        JSON, nullable=True
-    )
+    download_patterns: Mapped[Optional[Dict[str, List[str]]]] = mapped_column(JSON, nullable=True)
 
     # Execution State
     # Note: We might want to track local execution status here if it differs from ExternalRunStatus
@@ -119,9 +113,7 @@ class TaskModel(Base):
     external_run: Mapped[Optional["ExternalRunModel"]] = relationship(
         back_populates="task", uselist=False, cascade="all, delete-orphan"
     )
-    attempts: Mapped[List["TaskAttemptModel"]] = relationship(
-        back_populates="task", cascade="all, delete-orphan"
-    )
+    attempts: Mapped[List["TaskAttemptModel"]] = relationship(back_populates="task", cascade="all, delete-orphan")
 
 
 class TaskAttemptModel(Base):

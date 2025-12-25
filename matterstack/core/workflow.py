@@ -1,7 +1,8 @@
 from __future__ import annotations
-from typing import Dict, List, Set, Union, Optional
-from pathlib import Path
+
 import logging
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Union
 
 from pydantic import BaseModel, Field
 
@@ -9,13 +10,18 @@ from matterstack.core.id_generator import generate_task_id
 
 logger = logging.getLogger(__name__)
 
+
 class FileFromPath(BaseModel):
     """Represents a file to be copied from a local source path."""
+
     source_path: Path
+
 
 class FileFromContent(BaseModel):
     """Represents a file created from string content."""
+
     content: str
+
 
 class Task(BaseModel):
     """
@@ -37,19 +43,20 @@ class Task(BaseModel):
         gpus: Number of GPUs required. If None, use system/backend default.
         time_limit_minutes: Maximum execution time in minutes. If None, use system/backend default.
     """
+
     image: str
     command: str
     files: Dict[str, Union[str, Path, FileFromPath, FileFromContent]] = Field(default_factory=dict)
     env: Dict[str, str] = Field(default_factory=dict)
     dependencies: Set[str] = Field(default_factory=set)
     task_id: str = Field(default_factory=generate_task_id)
-    
+
     # Resource requirements
     cores: Optional[int] = None
     memory_gb: Optional[int] = None
     gpus: Optional[int] = None
     time_limit_minutes: Optional[int] = None
-    
+
     # Execution behavior
     allow_dependency_failure: bool = False
     allow_failure: bool = False
@@ -63,27 +70,31 @@ class Task(BaseModel):
     # Priority: operator_key > env["MATTERSTACK_OPERATOR"] > task type detection > config fallback
     operator_key: Optional[str] = None
 
+
 class Workflow(BaseModel):
     """
     A Directed Acyclic Graph (DAG) of Tasks.
-    
+
     Manages dependencies and execution order for a collection of Tasks.
     Ensures no circular dependencies exist.
     """
+
     tasks: Dict[str, Task] = Field(default_factory=dict)
-    
+
     def add_task(self, task: Task):
         """Add a task to the workflow."""
         if task.task_id in self.tasks:
             raise ValueError(f"Task with ID {task.task_id} already exists.")
-        
+
         # Verify dependencies exist
         # Relaxed Validation: We allow dependencies that are not in the current workflow
         # to support cross-workflow/iterative dependencies (e.g. Task B depends on Task A from prev run).
         for dep_id in task.dependencies:
             if dep_id not in self.tasks:
-                logger.debug(f"Dependency {dep_id} for task {task.task_id} not found in current workflow (assuming external/previous).")
-                
+                logger.debug(
+                    f"Dependency {dep_id} for task {task.task_id} not found in current workflow (assuming external/previous)."
+                )
+
         self.tasks[task.task_id] = task
 
     def get_topo_sorted_tasks(self) -> List[Task]:
@@ -106,5 +117,5 @@ class Workflow(BaseModel):
         for task_id in self.tasks:
             if task_id not in visited:
                 visit(task_id)
-                
+
         return sorted_list

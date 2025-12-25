@@ -3,7 +3,7 @@ import json
 import random
 import sys
 import time
-from pathlib import Path
+
 
 def calculate_properties(candidate_id, doping_level, dopant):
     # Simulate computation time
@@ -41,15 +41,15 @@ def main():
     parser.add_argument("--doping_level", type=float, required=True)
     parser.add_argument("--dopant", type=str, required=True)
     parser.add_argument("--output", type=str, default="results.json")
-    
+
     args = parser.parse_args()
-    
+
     results = calculate_properties(args.candidate_id, args.doping_level, args.dopant)
-    
+
     # Write results
     with open(args.output, "w") as f:
         json.dump(results, f, indent=2)
-        
+
     print(f"Successfully calculated properties for {args.candidate_id}")
 
 if __name__ == "__main__":

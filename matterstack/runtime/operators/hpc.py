@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from matterstack.core.backend import ComputeBackend, JobState
 from matterstack.core.operators import (
@@ -15,10 +14,12 @@ from matterstack.core.operators import (
 )
 from matterstack.core.run import RunHandle
 from matterstack.core.workflow import Task
-from matterstack.runtime.fs_safety import attempt_evidence_dir, operator_run_dir
+from matterstack.runtime.operators._attempt_resolver import (
+    get_or_create_store,
+    resolve_attempt_context,
+)
 from matterstack.runtime.operators._config_snapshot import write_attempt_config_snapshot
 from matterstack.runtime.task_manifest import write_task_manifest_json
-from matterstack.storage.state_store import SQLiteStateStore
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +35,7 @@ class ComputeOperator(Operator):
         runs/<run_id>/operators/<slug>/<operator_uuid>/
     """
 
-    def __init__(
-        self, backend: ComputeBackend, slug: str = "compute", operator_name: str = "DirectHPC"
-    ):
+    def __init__(self, backend: ComputeBackend, slug: str = "compute", operator_name: str = "DirectHPC"):
         self.backend = backend
         self.slug = slug
         self.operator_name = operator_name
@@ -56,114 +55,93 @@ class ComputeOperator(Operator):
         if not isinstance(task, Task):
             raise TypeError(f"ComputeOperator expects a Task object, got {type(task)}")
 
-        # Best-effort: discover attempt_id (created just before dispatch in the orchestrator)
-        attempt_id: Optional[str] = None
-        store: Optional[SQLiteStateStore] = None
-        try:
-            store = SQLiteStateStore(run.db_path)
-            attempt = store.get_current_attempt(task.task_id)
-            if attempt is not None:
-                attempt_id = attempt.attempt_id
-        except Exception as e:
-            # Back-compat: do not fail prepare_run if state store is unavailable
-            logger.debug(f"Could not resolve attempt_id for task {task.task_id}: {e}")
-
-        operator_uuid: Optional[str] = None
-
-        if attempt_id:
-            full_path = attempt_evidence_dir(run.root_path, task.task_id, attempt_id)
-        else:
-            # Legacy behavior: unique operator instance dir
-            operator_uuid = str(uuid.uuid4())
-            full_path = operator_run_dir(run.root_path, self.slug, operator_uuid)
-
-        relative_path = full_path.relative_to(run.root_path.resolve())
+        # Resolve attempt context (attempt-aware or legacy layout)
+        ctx = resolve_attempt_context(run.root_path, run.db_path, task.task_id, self.slug)
 
         # Create directory
-        full_path.mkdir(parents=True, exist_ok=True)
+        ctx.full_path.mkdir(parents=True, exist_ok=True)
 
         # Serialize task to manifest.json for persistence/debugging
-        #
-        # NOTE: Keep this manifest lean (no embedded file contents) to avoid huge/noisy JSON blobs.
-        manifest_path = full_path / "manifest.json"
+        manifest_path = ctx.full_path / "manifest.json"
         write_task_manifest_json(manifest_path, task)
 
         # v0.2.5: attempt-scoped config snapshot + deterministic hash (attempt-only)
-        if attempt_id:
-            try:
-                snapshot_meta = write_attempt_config_snapshot(run.root_path, full_path)
-
-                # Ensure hash surfaces in CLI + evidence export (via attempt.operator_data)
-                # and persists through orchestrator update_attempt(ext_handle.operator_data).
-                operator_data_update = {
-                    "config_hash": snapshot_meta["config_hash"],
-                    "config_snapshot": snapshot_meta["config_snapshot"],
-                }
-
-                # Best-effort: persist into DB immediately (useful for direct operator usage)
-                # without relying on orchestrator timing.
-                try:
-                    if store is None:
-                        store = SQLiteStateStore(run.db_path)
-                    current = store.get_attempt(attempt_id)
-                    existing = (
-                        current.operator_data
-                        if current is not None and isinstance(current.operator_data, dict)
-                        else {}
-                    )
-                    new_operator_data = dict(existing)
-                    new_operator_data.update(operator_data_update)
-                    store.update_attempt(attempt_id, operator_data=new_operator_data)
-                except Exception as e:
-                    logger.debug(f"Could not persist config snapshot metadata for attempt {attempt_id}: {e}")
-
-            except Exception as e:
-                # Best-effort only: snapshotting must not fail prepare_run
-                logger.debug(f"Could not create config snapshot for attempt {attempt_id}: {e}")
-                operator_data_update = {}
-
-        else:
-            operator_data_update = {}
+        operator_data_update = self._write_config_snapshot(run, ctx)
 
         # Determine remote workspace path logic
         remote_workdir = None
         if hasattr(self.backend, "workspace_root"):
             root = str(self.backend.workspace_root).rstrip("/")
             remote_workdir = f"{root}/{run.workspace_slug}/{run.run_id}/{task.task_id}"
-            if attempt_id:
-                remote_workdir = f"{remote_workdir}/{attempt_id}"
+            if ctx.attempt_id:
+                remote_workdir = f"{remote_workdir}/{ctx.attempt_id}"
 
         # Create handle
         operator_data: Dict[str, Any] = {
             "task_dump": task.model_dump(mode="json"),  # Store task data for submit()
-            "absolute_path": str(full_path),
+            "absolute_path": str(ctx.full_path),
             "remote_workdir": remote_workdir,
             **operator_data_update,
         }
-        if operator_uuid:
-            operator_data["operator_uuid"] = operator_uuid
-        if attempt_id:
-            operator_data["attempt_id"] = attempt_id
+        if ctx.operator_uuid:
+            operator_data["operator_uuid"] = ctx.operator_uuid
+        if ctx.attempt_id:
+            operator_data["attempt_id"] = ctx.attempt_id
 
         handle = ExternalRunHandle(
             task_id=task.task_id,
             operator_type=self.operator_name,
             status=ExternalRunStatus.CREATED,
             operator_data=operator_data,
-            relative_path=relative_path,
+            relative_path=ctx.relative_path,
         )
 
-        logger.info(f"Prepared {self.slug} run for task {task.task_id} at {relative_path}")
+        logger.info(f"Prepared {self.slug} run for task {task.task_id} at {ctx.relative_path}")
         return handle
+
+    def _write_config_snapshot(self, run: RunHandle, ctx) -> Dict[str, Any]:
+        """
+        Write config snapshot for attempt-aware executions.
+
+        Returns operator_data update dict with config_hash and config_snapshot.
+        """
+        if not ctx.is_attempt_aware:
+            return {}
+
+        try:
+            snapshot_meta = write_attempt_config_snapshot(run.root_path, ctx.full_path)
+
+            operator_data_update = {
+                "config_hash": snapshot_meta["config_hash"],
+                "config_snapshot": snapshot_meta["config_snapshot"],
+            }
+
+            # Best-effort: persist into DB immediately (useful for direct operator usage)
+            try:
+                store = get_or_create_store(ctx, run.db_path)
+                if store is not None:
+                    current = store.get_attempt(ctx.attempt_id)
+                    existing = (
+                        current.operator_data if current is not None and isinstance(current.operator_data, dict) else {}
+                    )
+                    new_operator_data = dict(existing)
+                    new_operator_data.update(operator_data_update)
+                    store.update_attempt(ctx.attempt_id, operator_data=new_operator_data)
+            except Exception as e:
+                logger.debug(f"Could not persist config snapshot metadata for attempt {ctx.attempt_id}: {e}")
+
+            return operator_data_update
+
+        except Exception as e:
+            logger.debug(f"Could not create config snapshot for attempt {ctx.attempt_id}: {e}")
+            return {}
 
     def submit(self, handle: ExternalRunHandle) -> ExternalRunHandle:
         """
         Submit the work to the external system via Backend.
         """
         if handle.status != ExternalRunStatus.CREATED:
-            logger.warning(
-                f"Submit called on handle with status {handle.status}, expected CREATED."
-            )
+            logger.warning(f"Submit called on handle with status {handle.status}, expected CREATED.")
             # For robustness, if it's already SUBMITTED or RUNNING, we assume it's done.
             if handle.status in [ExternalRunStatus.SUBMITTED, ExternalRunStatus.RUNNING]:
                 return handle
@@ -188,14 +166,8 @@ class ComputeOperator(Operator):
                 local_debug_dir = Path(abs_path_str)
 
             workdir_override = remote_dir
-            try:
-                from matterstack.runtime.backends.local import LocalBackend
-
-                if isinstance(self.backend, LocalBackend) and abs_path_str:
-                    workdir_override = abs_path_str
-            except Exception:
-                # Defensive: do not fail submission if backend type checks cannot be performed
-                workdir_override = remote_dir
+            if self.backend.is_local_execution and abs_path_str:
+                workdir_override = abs_path_str
 
             job_id = asyncio.run(
                 self.backend.submit(
@@ -224,25 +196,25 @@ class ComputeOperator(Operator):
         if not handle.external_id:
             # Not submitted yet?
             return handle
-            
+
         try:
             job_status = asyncio.run(self.backend.poll(handle.external_id))
-            
+
             # Map JobState to ExternalRunStatus
             new_status = self._map_status(job_status.state)
-            
+
             if new_status != handle.status:
                 logger.info(f"Task {handle.task_id} status changed: {handle.status} -> {new_status}")
                 handle.status = new_status
-                
+
             if job_status.reason:
                 handle.operator_data["reason"] = job_status.reason
-                
+
         except Exception as e:
             logger.error(f"Failed to poll status for {handle.task_id}: {e}")
-            # Don't fail the run immediately on poll failure? 
+            # Don't fail the run immediately on poll failure?
             # Or maybe we do? Let's keep it as is, maybe retry logic belongs in orchestrator.
-            
+
         return handle
 
     def collect_results(self, handle: ExternalRunHandle) -> OperatorResult:
@@ -256,60 +228,60 @@ class ComputeOperator(Operator):
         # However, collect_results typically happens when we have context.
         # Wait, the Operator interface assumes we can just return paths.
         # But we need to DOWNLOAD them from backend if they are remote.
-        
+
         # We need to know where to download TO.
         # The handle has `relative_path` which is where we Prepared the run.
         # But we don't have the root path here!
         # This is a design flaw in the interface if Operator is stateless and doesn't know Run Root.
         # The `prepare_run` had `RunHandle`, but `collect_results` only has `ExternalRunHandle`.
-        
+
         # Option A: Store absolute path in operator_data? No, absolute paths break relocatability.
         # Option B: The Caller passes context? No, interface is fixed.
         # Option C: We rely on the caller to have mounted the run directory or something?
-        
+
         # Wait, `ExternalRunHandle` has `relative_path`.
         # If we are running in the context of the run, we might know the CWD or something.
         # But `DirectHPCOperator` might be initialized generally.
-        
+
         # Let's look at `RunHandle` definition again in memory?
         # No, we only get `ExternalRunHandle`.
-        
+
         # ASSUMPTION: The orchestrator or whatever calls this has ensured that
-        # we can resolve the path. 
+        # we can resolve the path.
         # BUT, if we need to download files, we need a local target.
         # Let's assume for now we can't easily resolve the absolute path from just ExternalRunHandle
         # UNLESS we assume the process CWD is the run root OR we stored the root in `__init__`?
         # No, Operator is singleton-ish or instantiated per run?
         # "DirectHPCOperator wraps SlurmBackend". Backend usually knows `workspace_root` (remote).
-        
+
         # Let's check `matterstack/core/operators.py`.
         # It doesn't give a solution.
-        
+
         # Workaround: For now, we will SKIP downloading if we can't determine path,
         # OR we assume that `handle.relative_path` is relative to CWD if we are inside the run?
         # The orchestrator `step_run` doesn't change CWD.
-        
+
         # CRITICAL FIX: The `ExternalRunHandle` SHOULD probably store the `run_id`.
         # But it doesn't.
-        
+
         # Let's assume we can modify `ExternalRunHandle` or just fail to download for now?
-        # Or, we just return the remote paths? 
+        # Or, we just return the remote paths?
         # `OperatorResult` has `files: Dict[str, Path]`.
-        
+
         # Let's look at `collect_results` requirements again.
         # "Retrieve outputs from the operator directory."
-        
+
         # If the backend is Remote (SSH), we MUST download them.
         # If the backend is Local, they are already there?
-        
+
         # Let's assume for `DirectHPCOperator`, we want to download to the operator directory.
-        # I will enforce that `operator_data` must contain `run_root` (as string) 
+        # I will enforce that `operator_data` must contain `run_root` (as string)
         # OR I'll assume that the CWD is the workspace root?
-        
+
         # BETTER IDEA: `prepare_run` stores `run_root` in `operator_data`.
         # Absolute paths are risky if we move the folder, but for a running campaign it's okay.
         # Or we store `absolute_operator_path` in `operator_data`.
-        
+
         path_str = handle.operator_data.get("absolute_path")
         if not path_str:
             # Fallback: try to construct from CWD if we are lucky, or fail.
@@ -317,22 +289,22 @@ class ComputeOperator(Operator):
             # full_path = run.root_path / relative_path
             # I should store `str(full_path)` in operator_data.
             pass
-            
-        local_dir = Path(path_str) if path_str else Path(handle.relative_path) 
+
+        local_dir = Path(path_str) if path_str else Path(handle.relative_path)
         # Warning: if relative, where is it relative to?
-        
+
         # If we can't download, we assume they are remote or we fail.
         # Let's assume we stored `absolute_path` in `prepare_run`.
-        
+
         result_files = {}
-        
+
         if handle.external_id:
             try:
                 # Get download patterns from task
                 task_data = handle.operator_data.get("task_dump")
                 include_patterns = None
                 exclude_patterns = None
-                
+
                 if task_data:
                     # We could reconstruct Task object, but direct dict access is faster/safer if we just need this field
                     # and avoids full validation overhead if schema evolved.
@@ -351,13 +323,8 @@ class ComputeOperator(Operator):
                 remote_workdir = handle.operator_data.get("remote_workdir")
 
                 workdir_override = remote_workdir
-                try:
-                    from matterstack.runtime.backends.local import LocalBackend
-
-                    if isinstance(self.backend, LocalBackend) and path_str:
-                        workdir_override = path_str
-                except Exception:
-                    workdir_override = remote_workdir
+                if self.backend.is_local_execution and path_str:
+                    workdir_override = path_str
 
                 asyncio.run(
                     self.backend.download(
@@ -390,29 +357,22 @@ class ComputeOperator(Operator):
                             )
                         )
                     except Exception as e:
-                        logger.debug(
-                            f"Best-effort download of exit_code failed for {handle.task_id}: {e}"
-                        )
+                        logger.debug(f"Best-effort download of exit_code failed for {handle.task_id}: {e}")
 
                 # List files
                 for f in local_dir.rglob("*"):
                     if f.is_file():
                         # Key is relative to operator dir? or just filename?
                         result_files[f.name] = f
-                        
+
             except Exception as e:
                 logger.error(f"Failed to download results for {handle.task_id}: {e}")
                 return OperatorResult(
-                    task_id=handle.task_id,
-                    status=ExternalRunStatus.FAILED,
-                    error_message=f"Download failed: {e}"
+                    task_id=handle.task_id, status=ExternalRunStatus.FAILED, error_message=f"Download failed: {e}"
                 )
 
         return OperatorResult(
-            task_id=handle.task_id,
-            status=handle.status,
-            files=result_files,
-            data={"job_id": handle.external_id}
+            task_id=handle.task_id, status=handle.status, files=result_files, data={"job_id": handle.external_id}
         )
 
     def _map_status(self, job_state: JobState) -> ExternalRunStatus:
@@ -430,7 +390,7 @@ class ComputeOperator(Operator):
             return ExternalRunStatus.FAILED
         elif job_state == JobState.CANCELLED:
             return ExternalRunStatus.CANCELLED
-        
+
         # Default fallback
         logger.warning(f"Unknown JobState {job_state}, mapping to RUNNING.")
         return ExternalRunStatus.RUNNING

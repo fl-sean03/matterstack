@@ -6,12 +6,12 @@ This module contains the core type definitions used throughout the operator wiri
 - ResolvedOperatorWiring: Result of resolving operator wiring for a run
 - OperatorWiringProvenance: Lightweight provenance view for diagnostics
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
-
 
 # Environment variable name for operators config path
 _ENV_OPERATORS_CONFIG = "MATTERSTACK_OPERATORS_CONFIG"
@@ -19,6 +19,7 @@ _ENV_OPERATORS_CONFIG = "MATTERSTACK_OPERATORS_CONFIG"
 
 class OperatorWiringSource(str, Enum):
     """Source of operator wiring configuration."""
+
     CLI_OVERRIDE = "CLI_OVERRIDE"
     RUN_PERSISTED = "RUN_PERSISTED"
     WORKSPACE_DEFAULT = "WORKSPACE_DEFAULT"

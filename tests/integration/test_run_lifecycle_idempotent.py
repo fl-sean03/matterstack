@@ -1,24 +1,26 @@
-import pytest
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Optional, Any
-from unittest.mock import patch, MagicMock
+from typing import Any, Optional
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from matterstack.core.campaign import Campaign
-from matterstack.core.workflow import Workflow, Task
 from matterstack.core.external import ExternalTask
+from matterstack.core.operators import ExternalRunHandle, ExternalRunStatus
+from matterstack.core.workflow import Task, Workflow
 from matterstack.orchestration.run_lifecycle import initialize_run, step_run
 from matterstack.storage.state_store import SQLiteStateStore
-from matterstack.core.operators import ExternalRunStatus, ExternalRunHandle
+
 
 class MockExternalCampaign(Campaign):
     def plan(self, state: Any) -> Optional[Workflow]:
         if state is None:
             wf = Workflow()
             t = ExternalTask(
-                task_id="ext_1", 
-                image="ubuntu:latest", 
+                task_id="ext_1",
+                image="ubuntu:latest",
                 command="echo 'hello'"
             )
             wf.add_task(t)
@@ -41,11 +43,11 @@ def test_idempotency_external_task(workspace_path):
     """
     campaign = MockExternalCampaign()
     run_handle = initialize_run("test_ws", campaign, base_path=workspace_path)
-    
+
     # Initial State: Task Created (PENDING)
     store = SQLiteStateStore(run_handle.db_path)
     assert store.get_task_status("ext_1") == "PENDING"
-    
+
     # Step 1: Submit Task
     status = step_run(run_handle, campaign)
     assert status == "RUNNING"
@@ -82,12 +84,12 @@ def test_crash_recovery_partial_submission(workspace_path):
     """
     campaign = MockExternalCampaign()
     run_handle = initialize_run("crash_ws", campaign, base_path=workspace_path)
-    
+
     store = SQLiteStateStore(run_handle.db_path)
-    
+
     # Mock update_task_status to fail ONCE
     original_update = store.update_task_status
-    
+
     # Alternative: Subclass for testing
     class FlakyStore(SQLiteStateStore):
         def __init__(self, *args, **kwargs):
@@ -105,16 +107,16 @@ def test_crash_recovery_partial_submission(workspace_path):
 
     # Patch the class in the module where it's used (step_execution)
     with patch('matterstack.orchestration.step_execution.SQLiteStateStore', side_effect=FlakyStore):
-        # We need to set the flag on the instance. 
+        # We need to set the flag on the instance.
         # But `step_run` creates a new instance.
         # We can use `side_effect` on __init__ to set the flag?
         # Or just use a class attribute for the test
         FlakyStore.should_fail = True
-        
+
         # Step 1: Should Crash
         with pytest.raises(RuntimeError, match="Simulated Crash"):
             step_run(run_handle, campaign)
-            
+
     # Check State:
     # 1. Attempt created? (Yes, happens before update_task_status)
     attempts = store.list_attempts("ext_1")

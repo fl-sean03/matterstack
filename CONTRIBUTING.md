@@ -43,11 +43,30 @@ pytest -v
 pytest tests/test_core_basic.py
 ```
 
-## Code Style
+## Quality Standards
 
-*   **Type Hinting**: All new code must be fully type-hinted.
-*   **Formatting**: We generally follow PEP 8.
-*   **Docstrings**: Use Google-style docstrings for all public classes and functions.
+### Code Style
+
+- Python 3.11+
+- Ruff for linting and formatting
+- 500 LOC limit per file (enforced by `scripts/check_max_lines.sh`)
+- **Type Hinting**: All new code must be fully type-hinted.
+- **Formatting**: We generally follow PEP 8.
+- **Docstrings**: Use Google-style docstrings for all public classes and functions.
+
+### Testing
+
+- Run `uv run pytest tests/` before submitting PRs
+- Add characterization tests before refactoring
+- Target >80% test coverage for new code
+
+### Pre-commit
+
+Install hooks: `uv run pre-commit install`
+
+Hooks run automatically on commit:
+- Ruff lint + format
+- LOC limit check
 
 ## Pull Request Process
 

@@ -1,10 +1,11 @@
+
 import pytest
-import asyncio
-from unittest.mock import patch, MagicMock
-from matterstack.runtime.backends.hpc.backend import SlurmBackend
-from matterstack.runtime.backends.local import LocalBackend
-from matterstack.runtime.backends.hpc.ssh import SSHConfig
+
 from matterstack.core.workflow import Task
+from matterstack.runtime.backends.hpc.backend import SlurmBackend
+from matterstack.runtime.backends.hpc.ssh import SSHConfig
+from matterstack.runtime.backends.local import LocalBackend
+
 
 @pytest.fixture
 def slurm_backend():
@@ -36,26 +37,26 @@ class TestSlurmResourceLogic:
         )
 
         script = slurm_backend._generate_batch_script(task, "/path/to/task")
-        
+
         # Should not have specific resource directives from Task (should be None or skipped)
         # But wait, current implementation might put "None" in the script which is invalid.
-        
+
         # Check time
         # Current impl: lines.append(f"#SBATCH --time={task.time_limit_minutes}")
         # If None, it becomes "--time=None", which is invalid Slurm.
         # We want it to be skipped so it falls back to slurm_config["time"] or system default.
-        
+
         assert "#SBATCH --time=None" not in script
         assert "#SBATCH --time=60" in script # Should fallback to global default
-        
+
         # Check cores
         assert "#SBATCH --cpus-per-task=None" not in script
         assert "#SBATCH --cpus-per-task=1" in script # Fallback
-        
+
         # Check memory
         assert "#SBATCH --mem=NoneG" not in script
         assert "#SBATCH --mem=4" in script # Fallback
-        
+
         # Check GPUs
         # Current impl: if task.gpus > 0: -> raises TypeError if None
         # We want it to handle None safely (treat as 0/None)
@@ -77,13 +78,13 @@ class TestSlurmResourceLogic:
 
         assert "#SBATCH --time=120" in script
         assert "#SBATCH --time=60" not in script
-        
+
         assert "#SBATCH --cpus-per-task=4" in script
         assert "#SBATCH --cpus-per-task=1" not in script
-        
+
         assert "#SBATCH --mem=16G" in script
         assert "#SBATCH --mem=4" not in script
-        
+
         assert "#SBATCH --gres=gpu:1" in script
 
     def test_generate_script_zero_values(self, slurm_backend):
@@ -107,8 +108,8 @@ class TestLocalResourceLogic:
             time_limit_minutes=None,
             gpus=None
         )
-        
+
         # This shouldn't crash
         await local_backend.submit(task)
-        
+
         assert local_backend._jobs["local_none"].state.name == "COMPLETED_OK"

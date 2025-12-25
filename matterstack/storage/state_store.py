@@ -31,9 +31,7 @@ from matterstack.storage._migrations import (
 )
 from matterstack.storage._run_operations import _RunOperationsMixin
 from matterstack.storage._task_operations import _TaskOperationsMixin
-from matterstack.storage.schema import Base, SchemaInfo
-
-CURRENT_SCHEMA_VERSION = "4"
+from matterstack.storage.schema import CURRENT_SCHEMA_VERSION, Base, SchemaInfo
 
 # Re-export for backward compatibility
 __all__ = ["SQLiteStateStore", "CURRENT_SCHEMA_VERSION", "TASK_ATTEMPT_MIGRATION_NAMESPACE"]
@@ -50,7 +48,7 @@ class SQLiteStateStore(
 ):
     """
     Persistence layer for MatterStack runs using SQLite.
-    
+
     This class provides methods for:
     - Run management: create, get, update status
     - Task management: add workflow, get tasks, update status
@@ -101,9 +99,7 @@ class SQLiteStateStore(
 
             if not info:
                 # Initialize version
-                logger.info(
-                    f"Initializing database schema v{CURRENT_SCHEMA_VERSION} at {self.db_path}"
-                )
+                logger.info(f"Initializing database schema v{CURRENT_SCHEMA_VERSION} at {self.db_path}")
                 info = SchemaInfo(key="version", value=CURRENT_SCHEMA_VERSION)
                 session.add(info)
                 session.commit()
@@ -133,8 +129,7 @@ class SQLiteStateStore(
                 return
 
             raise RuntimeError(
-                f"Schema version mismatch: Database is v{info.value}, "
-                f"Code expects v{CURRENT_SCHEMA_VERSION}"
+                f"Schema version mismatch: Database is v{info.value}, Code expects v{CURRENT_SCHEMA_VERSION}"
             )
 
     @contextlib.contextmanager

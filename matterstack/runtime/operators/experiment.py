@@ -1,34 +1,28 @@
 from __future__ import annotations
-import uuid
-import logging
+
 import json
+import logging
+import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
+
 from pydantic import ValidationError
 
-from matterstack.core.operators import (
-    Operator,
-    ExternalRunHandle,
-    ExternalRunStatus,
-    OperatorResult
-)
+from matterstack.core.operators import ExternalRunHandle, ExternalRunStatus, Operator, OperatorResult
 from matterstack.core.run import RunHandle
 from matterstack.core.workflow import Task
 from matterstack.runtime.fs_safety import attempt_evidence_dir, operator_run_dir
-from matterstack.runtime.manifests import (
-    ExperimentRequestManifest,
-    ExperimentResultManifest,
-    ExternalStatus
-)
+from matterstack.runtime.manifests import ExperimentRequestManifest, ExperimentResultManifest, ExternalStatus
 from matterstack.runtime.task_manifest import write_task_manifest_json
 from matterstack.storage.state_store import SQLiteStateStore
 
 logger = logging.getLogger(__name__)
 
+
 class ExperimentOperator(Operator):
     """
     Operator for physical experiment tasks.
-    Prepares a directory with experiment parameters (experiment_request.json), 
+    Prepares a directory with experiment parameters (experiment_request.json),
     then waits for external confirmation (experiment_result.json) to mark as complete.
     """
 
@@ -67,28 +61,26 @@ class ExperimentOperator(Operator):
 
         # Create directory
         full_path.mkdir(parents=True, exist_ok=True)
-        
+
         # 1. Write manifest.json (lean; no embedded file contents)
         manifest_path = full_path / "manifest.json"
         write_task_manifest_json(manifest_path, task)
-            
+
         # 2. Generate experiment_request.json
         # This file is intended to be consumed by the lab control software.
         # We can populate it from task.env or a specific file in task.files
         # Create manifest using Pydantic model
         request_manifest = ExperimentRequestManifest(
-            task_id=task.task_id,
-            parameters=task.env,
-            files=list(task.files.keys())
+            task_id=task.task_id, parameters=task.env, files=list(task.files.keys())
         )
-        
+
         # If the task provides a specific 'experiment_config' in env, use that
         if "EXPERIMENT_CONFIG" in task.env:
-             try:
-                 config = json.loads(task.env["EXPERIMENT_CONFIG"])
-                 request_manifest.config = config
-             except json.JSONDecodeError:
-                 request_manifest.config_raw = task.env["EXPERIMENT_CONFIG"]
+            try:
+                config = json.loads(task.env["EXPERIMENT_CONFIG"])
+                request_manifest.config = config
+            except json.JSONDecodeError:
+                request_manifest.config_raw = task.env["EXPERIMENT_CONFIG"]
 
         request_path = full_path / "experiment_request.json"
         with open(request_path, "w") as f:
@@ -114,7 +106,7 @@ class ExperimentOperator(Operator):
             },
             relative_path=relative_path,
         )
-        
+
         logger.info(f"Prepared Experiment run for task {task.task_id} at {relative_path}")
         return handle
 
@@ -127,7 +119,7 @@ class ExperimentOperator(Operator):
             if handle.status in [ExternalRunStatus.WAITING_EXTERNAL, ExternalRunStatus.COMPLETED]:
                 return handle
             logger.warning(f"Submit called on handle with status {handle.status}")
-            
+
         handle.status = ExternalRunStatus.WAITING_EXTERNAL
         logger.info(f"Task {handle.task_id} is now WAITING_EXTERNAL for experiment execution.")
         return handle
@@ -139,11 +131,11 @@ class ExperimentOperator(Operator):
         """
         if handle.status == ExternalRunStatus.COMPLETED:
             return handle
-            
+
         path_str = handle.operator_data.get("absolute_path")
         if not path_str:
             return handle
-            
+
         op_dir = Path(path_str)
         if not op_dir.exists():
             return handle
@@ -155,7 +147,7 @@ class ExperimentOperator(Operator):
                 with open(result_file, "r") as f:
                     try:
                         result_manifest = ExperimentResultManifest.model_validate_json(f.read())
-                        
+
                         if result_manifest.status == ExternalStatus.COMPLETED:
                             handle.status = ExternalRunStatus.COMPLETED
                             logger.info(f"Task {handle.task_id} completed (found experiment_result.json).")
@@ -171,7 +163,7 @@ class ExperimentOperator(Operator):
                         return handle
             except Exception as e:
                 logger.warning(f"Failed to read experiment_result.json for {handle.task_id}: {e}")
-                
+
         return handle
 
     def collect_results(self, handle: ExternalRunHandle) -> OperatorResult:
@@ -180,15 +172,13 @@ class ExperimentOperator(Operator):
         """
         path_str = handle.operator_data.get("absolute_path")
         if not path_str:
-             return OperatorResult(
-                task_id=handle.task_id,
-                status=ExternalRunStatus.FAILED,
-                error_message="Missing absolute_path"
+            return OperatorResult(
+                task_id=handle.task_id, status=ExternalRunStatus.FAILED, error_message="Missing absolute_path"
             )
-            
+
         op_dir = Path(path_str)
         result_file = op_dir / "experiment_result.json"
-        
+
         data = {}
         if result_file.exists():
             try:
@@ -201,16 +191,11 @@ class ExperimentOperator(Operator):
         # Collect files
         result_files = {}
         system_files = {"manifest.json", "experiment_request.json", "experiment_result.json"}
-        
+
         if op_dir.exists():
             for f in op_dir.rglob("*"):
                 if f.is_file() and f.name not in system_files:
                     rel_name = f.relative_to(op_dir).as_posix()
                     result_files[rel_name] = f
-        
-        return OperatorResult(
-            task_id=handle.task_id,
-            status=handle.status,
-            files=result_files,
-            data=data
-        )
+
+        return OperatorResult(task_id=handle.task_id, status=handle.status, files=result_files, data=data)

@@ -1,25 +1,23 @@
 from __future__ import annotations
-import uuid
-import logging
+
 import json
+import logging
+import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
+
 from pydantic import ValidationError
 
-from matterstack.core.operators import (
-    Operator,
-    ExternalRunHandle,
-    ExternalRunStatus,
-    OperatorResult
-)
+from matterstack.core.operators import ExternalRunHandle, ExternalRunStatus, Operator, OperatorResult
 from matterstack.core.run import RunHandle
 from matterstack.core.workflow import Task
 from matterstack.runtime.fs_safety import attempt_evidence_dir, operator_run_dir
-from matterstack.runtime.manifests import HumanResponseManifest, ExternalStatus
+from matterstack.runtime.manifests import ExternalStatus, HumanResponseManifest
 from matterstack.runtime.task_manifest import write_task_manifest_json
 from matterstack.storage.state_store import SQLiteStateStore
 
 logger = logging.getLogger(__name__)
+
 
 class HumanOperator(Operator):
     """
@@ -63,22 +61,22 @@ class HumanOperator(Operator):
 
         # Create directory
         full_path.mkdir(parents=True, exist_ok=True)
-        
+
         # 1. Write manifest.json (lean; no embedded file contents)
         manifest_path = full_path / "manifest.json"
         write_task_manifest_json(manifest_path, task)
-            
+
         # 2. Generate instructions.md
         # Extract instructions from task env or files if available, otherwise default
         instructions_content = task.env.get("INSTRUCTIONS", "Please complete the task as described.")
-        
+
         # Also check if 'instructions.md' is provided in task.files
         if "instructions.md" in task.files:
             content_val = task.files["instructions.md"]
             if isinstance(content_val, str):
                 instructions_content = content_val
             # If path, we would copy it, but let's stick to string for now or basic logic
-        
+
         instructions_path = full_path / "instructions.md"
         with open(instructions_path, "w") as f:
             f.write(f"# Human Task: {task.task_id}\n\n")
@@ -87,21 +85,26 @@ class HumanOperator(Operator):
             f.write("## Completion\n")
             f.write("To complete this task, create a file named `response.json` in this directory.\n")
             f.write("Format:\n")
-            f.write("```json\n{\n  \"status\": \"COMPLETED\",\n  \"data\": { ... }\n}\n```\n")
+            f.write('```json\n{\n  "status": "COMPLETED",\n  "data": { ... }\n}\n```\n')
 
         # 3. Generate schema.json (optional, for validated input)
         # Using a placeholder for now
         schema_path = full_path / "schema.json"
         with open(schema_path, "w") as f:
-            f.write(json.dumps({
-                "type": "object",
-                "properties": {
-                    "status": {"type": "string", "enum": ["COMPLETED", "FAILED"]},
-                    "data": {"type": "object"}
-                },
-                "required": ["status"]
-            }, indent=2))
-            
+            f.write(
+                json.dumps(
+                    {
+                        "type": "object",
+                        "properties": {
+                            "status": {"type": "string", "enum": ["COMPLETED", "FAILED"]},
+                            "data": {"type": "object"},
+                        },
+                        "required": ["status"],
+                    },
+                    indent=2,
+                )
+            )
+
         handle = ExternalRunHandle(
             task_id=task.task_id,
             operator_type="Human",
@@ -113,7 +116,7 @@ class HumanOperator(Operator):
             },
             relative_path=relative_path,
         )
-        
+
         logger.info(f"Prepared Human run for task {task.task_id} at {relative_path}")
         return handle
 
@@ -126,7 +129,7 @@ class HumanOperator(Operator):
             if handle.status in [ExternalRunStatus.WAITING_EXTERNAL, ExternalRunStatus.COMPLETED]:
                 return handle
             logger.warning(f"Submit called on handle with status {handle.status}")
-            
+
         handle.status = ExternalRunStatus.WAITING_EXTERNAL
         logger.info(f"Task {handle.task_id} is now WAITING_EXTERNAL for human input.")
         return handle
@@ -138,12 +141,12 @@ class HumanOperator(Operator):
         """
         if handle.status == ExternalRunStatus.COMPLETED:
             return handle
-            
+
         path_str = handle.operator_data.get("absolute_path")
         if not path_str:
             logger.error(f"Cannot check status: absolute_path missing for {handle.task_id}")
             return handle
-            
+
         op_dir = Path(path_str)
         if not op_dir.exists():
             logger.warning(f"Operator directory not found: {op_dir}")
@@ -157,7 +160,7 @@ class HumanOperator(Operator):
                     try:
                         # Validate with Pydantic
                         resp = HumanResponseManifest.model_validate_json(f.read())
-                        
+
                         if resp.status == ExternalStatus.COMPLETED:
                             handle.status = ExternalRunStatus.COMPLETED
                             logger.info(f"Task {handle.task_id} completed (found response.json).")
@@ -173,7 +176,7 @@ class HumanOperator(Operator):
                         return handle
             except Exception as e:
                 logger.warning(f"Failed to read response.json for {handle.task_id}: {e}")
-                
+
         return handle
 
     def collect_results(self, handle: ExternalRunHandle) -> OperatorResult:
@@ -182,15 +185,15 @@ class HumanOperator(Operator):
         """
         path_str = handle.operator_data.get("absolute_path")
         if not path_str:
-             return OperatorResult(
+            return OperatorResult(
                 task_id=handle.task_id,
                 status=ExternalRunStatus.FAILED,
-                error_message="Missing absolute_path in operator_data"
+                error_message="Missing absolute_path in operator_data",
             )
-            
+
         op_dir = Path(path_str)
         response_file = op_dir / "response.json"
-        
+
         data = {}
         if response_file.exists():
             try:
@@ -203,17 +206,12 @@ class HumanOperator(Operator):
         # Collect any other files in the directory (excluding system files)
         result_files = {}
         system_files = {"manifest.json", "instructions.md", "schema.json", "response.json"}
-        
+
         if op_dir.exists():
             for f in op_dir.rglob("*"):
                 if f.is_file() and f.name not in system_files:
                     # Key relative to operator dir
                     rel_name = f.relative_to(op_dir).as_posix()
                     result_files[rel_name] = f
-        
-        return OperatorResult(
-            task_id=handle.task_id,
-            status=handle.status,
-            files=result_files,
-            data=data
-        )
+
+        return OperatorResult(task_id=handle.task_id, status=handle.status, files=result_files, data=data)

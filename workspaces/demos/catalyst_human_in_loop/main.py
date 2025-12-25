@@ -1,12 +1,12 @@
-import os
-import time
 import json
+import os
 import threading
+import time
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 from matterstack import Campaign, Task, Workflow, initialize_run, run_until_completion
-from matterstack.runtime.manifests import ExternalStatus
+
 
 # Helper to simulate human interaction with new Operator structure
 def simulate_human_approver(run_root: Path):
@@ -15,32 +15,32 @@ def simulate_human_approver(run_root: Path):
     """
     operators_dir = run_root / "operators" / "human"
     print(f"[Human Simulator] Watching {operators_dir}...")
-    
+
     processed_uuids = set()
-    
+
     while True:
         if operators_dir.exists():
             for op_dir in operators_dir.iterdir():
                 if op_dir.is_dir() and op_dir.name not in processed_uuids:
                     # found a new human task directory
                     print(f"[Human Simulator] Found task: {op_dir.name}")
-                    
+
                     # Wait a bit to simulate thinking
                     time.sleep(2)
-                    
+
                     # Create response.json
                     response = {
                         "status": "COMPLETED",
                         "data": {"approved": True, "comment": "Looks good!"}
                     }
-                    
+
                     resp_path = op_dir / "response.json"
                     with open(resp_path, "w") as f:
                         json.dump(response, f)
-                        
+
                     print(f"[Human Simulator] Approved task in {resp_path}")
                     processed_uuids.add(op_dir.name)
-        
+
         time.sleep(1)
 
 class CatalystHumanCampaign(Campaign):
@@ -50,11 +50,11 @@ class CatalystHumanCampaign(Campaign):
         if state:
             iteration = state.get("iteration", 0)
             energy_files = state.get("energy_files", [])
-            
+
         workflow = Workflow()
         base_dir = Path(__file__).parent.absolute()
         scripts_dir = base_dir / "scripts"
-        
+
         # Iteration 0: Propose Candidates
         if iteration == 0:
             print("Campaign: Planning Iteration 0 (Propose Candidates)...")
@@ -66,17 +66,17 @@ class CatalystHumanCampaign(Campaign):
             )
             workflow.add_task(task_propose)
             return workflow
-            
+
         # Iteration 1: Human Approval Gate
         elif iteration == 1:
             print("Campaign: Planning Iteration 1 (Human Approval)...")
-            
+
             # Point to the candidate file from previous step
             # Path relative to run_root/task_id?
             # The human operator UI would ideally get a link.
             # For now, we put the path in instructions.
             cand_path = "../propose_candidates/candidates.csv"
-            
+
             # Using generic Task mapped to HumanOperator via env var
             gate_task = Task(
                 task_id="human_approval",
@@ -106,13 +106,13 @@ class CatalystHumanCampaign(Campaign):
         # Iteration 3: Rank Results
         elif iteration == 3:
             print("Campaign: Planning Iteration 3 (Ranking)...")
-            
+
             # Pass aggregated energy files
             # Paths relative to rank_results task dir (which is run_root/rank_results)
             # So we prepend "../" to the paths stored in state (which are relative to run_root)
-            
+
             input_args = " ".join([f"../{f}" for f in energy_files])
-            
+
             task_rank = Task(
                 task_id="rank_results",
                 image="python:3.9",
@@ -121,25 +121,25 @@ class CatalystHumanCampaign(Campaign):
             )
             workflow.add_task(task_rank)
             return workflow
-            
+
         return None
 
     def analyze(self, current_state: Any, results: Dict[str, Any]) -> Any:
         iteration = 0
         energy_files = []
-        
+
         if current_state:
             iteration = current_state.get("iteration", 0)
             energy_files = current_state.get("energy_files", [])
-            
+
         print(f"Campaign: Analyzing results from iteration {iteration}...")
-        
+
         if iteration == 2:
             # Collect results from Fan-out Adsorption Calcs
             for task_id, res in results.items():
                 if task_id.startswith("calc_ads_") and res.get("status") == "COMPLETED":
                      energy_files.append(f"{task_id}/energy.json")
-        
+
         new_state = {
             "iteration": iteration + 1,
             "energy_files": energy_files
@@ -152,7 +152,7 @@ def get_campaign():
 if __name__ == "__main__":
     print("Initializing Run...")
     handle = initialize_run("catalyst_human_in_loop", get_campaign())
-    
+
     # Create config.json to enforce actual execution via LocalBackend
     config_path = handle.root_path / "config.json"
     with open(config_path, "w") as f:
@@ -161,6 +161,6 @@ if __name__ == "__main__":
     # Start Human Simulator
     t = threading.Thread(target=simulate_human_approver, args=(handle.root_path,), daemon=True)
     t.start()
-    
+
     print(f"Starting Loop for Run {handle.run_id}")
     run_until_completion(handle, get_campaign())

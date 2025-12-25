@@ -1,7 +1,10 @@
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+
 from matterstack.core.domain import Candidate
 from matterstack.core.operators import get_operator
+
 from .context import RuntimeContext
+
 
 def execute_batch(
     operator_name: str,

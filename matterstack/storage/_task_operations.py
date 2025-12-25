@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 class _TaskOperationsMixin:
     """
     Mixin class providing task CRUD operations for SQLiteStateStore.
-    
+
     Expects the following attributes on self:
     - SessionLocal: SQLAlchemy sessionmaker instance
     """
@@ -68,7 +68,7 @@ class _TaskOperationsMixin:
                     # Create new task
                     new_task = TaskModel(task_id=task.task_id, **task_data)
                     session.add(new_task)
-            
+
             session.commit()
 
     def get_tasks(self, run_id: str) -> List[Task]:
@@ -78,7 +78,7 @@ class _TaskOperationsMixin:
         with self.SessionLocal() as session:
             stmt = select(TaskModel).where(TaskModel.run_id == run_id)
             task_models = session.scalars(stmt).all()
-            
+
             tasks = []
             for tm in task_models:
                 # Determine class based on task_type
@@ -87,12 +87,12 @@ class _TaskOperationsMixin:
                     cls = ExternalTask
                 elif tm.task_type == "GateTask":
                     cls = GateTask
-                
+
                 # Note: We rely on default values for fields specific to External/GateTask
                 # that are not stored in TaskModel (e.g. request_path).
                 # Ideally, we should serialize those into 'files' or a new field.
                 # But for now, we just restore the class identity.
-                
+
                 task = cls(
                     task_id=tm.task_id,
                     image=tm.image,
@@ -111,7 +111,7 @@ class _TaskOperationsMixin:
                 )
                 tasks.append(task)
             return tasks
-            
+
     def get_task_status(self, task_id: str) -> str | None:
         """
         Get the internal status of a task.
@@ -139,7 +139,7 @@ class _TaskOperationsMixin:
             # (In case foreign key constraints aren't enforcing cascade)
             stmt_ext = delete(ExternalRunModel).where(ExternalRunModel.task_id == task_id)
             session.execute(stmt_ext)
-            
+
             stmt = delete(TaskModel).where(TaskModel.task_id == task_id)
             session.execute(stmt)
             session.commit()

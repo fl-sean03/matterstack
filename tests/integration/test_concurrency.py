@@ -1,9 +1,12 @@
-import pytest
 import fcntl
-import time
 import multiprocessing
+import time
 from pathlib import Path
+
+import pytest
+
 from matterstack.storage.state_store import SQLiteStateStore
+
 
 def hold_lock(lock_path: Path, event):
     """
@@ -23,7 +26,7 @@ def test_lock_basic(tmp_path):
     """
     db_path = tmp_path / "state.sqlite"
     store = SQLiteStateStore(db_path)
-    
+
     with store.lock():
         assert (tmp_path / "run.lock").exists()
 
@@ -33,20 +36,20 @@ def test_lock_contention(tmp_path):
     """
     db_path = tmp_path / "state.sqlite"
     lock_path = tmp_path / "run.lock"
-    
+
     # Initialize store (creates directory etc)
     store = SQLiteStateStore(db_path)
-    
+
     # Start a child process that holds the lock
     event = multiprocessing.Event()
     p = multiprocessing.Process(target=hold_lock, args=(lock_path, event))
     p.start()
-    
+
     # Wait for child to acquire lock (busy wait is ugly but simple for test)
     # We can't easily signal "I have the lock" without another queue/event
     # So we'll just wait a bit.
-    time.sleep(0.5) 
-    
+    time.sleep(0.5)
+
     try:
         # Try to acquire lock in main process
         with pytest.raises(RuntimeError, match="Could not acquire lock"):
@@ -63,10 +66,10 @@ def test_lock_release(tmp_path):
     """
     db_path = tmp_path / "state.sqlite"
     store = SQLiteStateStore(db_path)
-    
+
     with store.lock():
         pass
-        
+
     # Should be able to acquire again
     with store.lock():
         pass

@@ -12,39 +12,39 @@ Public API:
 - load_wiring_provenance_from_run_root: Load provenance from run metadata
 - format_operator_wiring_explain_line: Format provenance for explain command
 """
+
 from __future__ import annotations
 
 import os
 from pathlib import Path
 from typing import Any, Optional
 
-# Re-export types from internal modules
-from ._wiring_types import (
-    OperatorWiringSource,
-    ResolvedOperatorWiring,
-    OperatorWiringProvenance,
-    _ENV_OPERATORS_CONFIG,
+# Import legacy support
+from ._wiring_legacy import _generate_legacy_operators_yaml_bytes
+
+# Import internal persistence functions
+from ._wiring_persistence import (
+    _append_history,
+    _ensure_explicit_path_exists,
+    _load_snapshot_sha256_if_present,
+    _persist_snapshot_bytes,
+    _snapshot_paths,
+    _write_metadata,
 )
 
 # Re-export provenance functions
 from ._wiring_provenance import (
-    load_wiring_provenance_from_run_root,
     format_operator_wiring_explain_line,
+    load_wiring_provenance_from_run_root,
 )
 
-# Import internal persistence functions
-from ._wiring_persistence import (
-    _ensure_explicit_path_exists,
-    _snapshot_paths,
-    _write_metadata,
-    _append_history,
-    _load_snapshot_sha256_if_present,
-    _persist_snapshot_bytes,
+# Re-export types from internal modules
+from ._wiring_types import (
+    _ENV_OPERATORS_CONFIG,
+    OperatorWiringProvenance,
+    OperatorWiringSource,
+    ResolvedOperatorWiring,
 )
-
-# Import legacy support
-from ._wiring_legacy import _generate_legacy_operators_yaml_bytes
-
 
 __all__ = [
     "OperatorWiringSource",

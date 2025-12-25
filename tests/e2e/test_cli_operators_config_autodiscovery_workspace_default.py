@@ -1,14 +1,13 @@
 import json
 import re
+import shutil
 import sys
 import time
 from pathlib import Path
-import shutil
 
 import pytest
 
 from matterstack.cli.main import main
-
 
 WORKSPACE_SLUG = "operator_wiring_autodiscovery_validation"
 

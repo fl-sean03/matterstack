@@ -4,6 +4,7 @@ Internal provenance handling for operator wiring.
 This module contains functions for loading and formatting operator wiring provenance
 information from run metadata files.
 """
+
 from __future__ import annotations
 
 import json
@@ -67,6 +68,4 @@ def format_operator_wiring_explain_line(run_root: Path) -> str:
     if not prov.source or not prov.sha256 or not prov.snapshot_relpath:
         return "Operator wiring: none/unknown"
 
-    return (
-        f"Operator wiring: source={prov.source}, sha256={prov.sha256}, snapshot={prov.snapshot_relpath}"
-    )
+    return f"Operator wiring: source={prov.source}, sha256={prov.sha256}, snapshot={prov.snapshot_relpath}"

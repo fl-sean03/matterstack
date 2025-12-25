@@ -1,39 +1,43 @@
 from __future__ import annotations
+
 import os
 from pathlib import Path
 
+
 class PathSafetyError(Exception):
     """Raised when a path safety check fails."""
+
     pass
+
 
 def ensure_under_run_root(run_root: Path, target: Path) -> Path:
     """
     Ensure that the target path is contained within the run_root.
     Resolves both paths to their absolute form before checking.
-    
+
     Args:
         run_root: The root directory of the run.
         target: The target path to check.
-        
+
     Returns:
         The resolved absolute target path.
-        
+
     Raises:
         PathSafetyError: If the target is not within the run_root.
     """
     try:
         abs_root = run_root.resolve()
         abs_target = target.resolve()
-    except OSError as e:
+    except OSError:
         # Handling cases where the path might not exist yet but we want to check its potential location
         # If resolve fails (e.g. on Windows sometimes), we try abspath
         abs_root = Path(os.path.abspath(run_root))
         abs_target = Path(os.path.abspath(target))
 
-    # If the target doesn't exist, resolve() might still work if the parent exists, 
-    # but strictly speaking resolve() usually follows symlinks. 
+    # If the target doesn't exist, resolve() might still work if the parent exists,
+    # but strictly speaking resolve() usually follows symlinks.
     # For safety, we want the physical path.
-    
+
     # Check if abs_target starts with abs_root
     # We use os.path.commonpath to safely check containment
     try:
@@ -44,8 +48,9 @@ def ensure_under_run_root(run_root: Path, target: Path) -> Path:
 
     if Path(common) != abs_root:
         raise PathSafetyError(f"Target path {target} escapes run root {run_root}")
-        
+
     return abs_target
+
 
 def operator_run_dir(run_root: Path, operator_type: str, uuid: str) -> Path:
     """
@@ -60,9 +65,7 @@ def operator_run_dir(run_root: Path, operator_type: str, uuid: str) -> Path:
         The absolute path to the operator's directory.
     """
     # Sanitize inputs
-    op_type_clean = "".join(
-        c for c in operator_type.lower() if c.isalnum() or c in "_-"
-    )
+    op_type_clean = "".join(c for c in operator_type.lower() if c.isalnum() or c in "_-")
     uuid_clean = "".join(c for c in uuid if c.isalnum() or c in "-")
 
     # Construct relative path

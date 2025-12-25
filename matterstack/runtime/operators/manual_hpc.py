@@ -1,24 +1,21 @@
 from __future__ import annotations
-import uuid
+
 import logging
-import json
+import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
+
 from pydantic import ValidationError
 
-from matterstack.core.operators import (
-    Operator,
-    ExternalRunHandle,
-    ExternalRunStatus,
-    OperatorResult
-)
+from matterstack.core.operators import ExternalRunHandle, ExternalRunStatus, Operator, OperatorResult
 from matterstack.core.run import RunHandle
 from matterstack.core.workflow import Task
 from matterstack.runtime.fs_safety import operator_run_dir
-from matterstack.runtime.manifests import ManualHPCStatusManifest, ExternalStatus
+from matterstack.runtime.manifests import ExternalStatus, ManualHPCStatusManifest
 from matterstack.runtime.task_manifest import write_task_manifest_json
 
 logger = logging.getLogger(__name__)
+
 
 class ManualHPCOperator(Operator):
     """
@@ -35,18 +32,18 @@ class ManualHPCOperator(Operator):
             raise TypeError(f"ManualHPCOperator expects a Task object, got {type(task)}")
 
         operator_uuid = str(uuid.uuid4())
-        
+
         # Use fs_safety
         full_path = operator_run_dir(run.root_path, "manual", operator_uuid)
         relative_path = full_path.relative_to(run.root_path)
-        
+
         # Create directory
         full_path.mkdir(parents=True, exist_ok=True)
-        
+
         # 1. Write manifest.json (lean; no embedded file contents)
         manifest_path = full_path / "manifest.json"
         write_task_manifest_json(manifest_path, task)
-            
+
         # 2. Generate job_template.sh
         job_script_path = full_path / "job_template.sh"
         with open(job_script_path, "w") as f:
@@ -55,7 +52,7 @@ class ManualHPCOperator(Operator):
             f.write("# Instructions:\n")
             f.write("# 1. Edit this script or run your commands manually.\n")
             f.write("# 2. Place output files in the 'output' directory.\n")
-            f.write("# 3. When finished, create a 'status.json' file with {\"status\": \"COMPLETED\"}\n")
+            f.write('# 3. When finished, create a \'status.json\' file with {"status": "COMPLETED"}\n')
             f.write("#    OR simply ensure files exist in 'output/' folder.\n")
             f.write("\n")
             f.write("mkdir -p output\n")
@@ -63,22 +60,19 @@ class ManualHPCOperator(Operator):
             f.write("echo 'Hello from Manual HPC' > output/result.txt\n")
             f.write("\n")
             f.write("# Signal completion\n")
-            f.write("echo '{\"status\": \"COMPLETED\"}' > status.json\n")
-            
+            f.write('echo \'{"status": "COMPLETED"}\' > status.json\n')
+
         # 3. Create 'output' directory
         (full_path / "output").mkdir(exist_ok=True)
-        
+
         handle = ExternalRunHandle(
             task_id=task.task_id,
             operator_type="ManualHPC",
             status=ExternalRunStatus.CREATED,
-            operator_data={
-                "operator_uuid": operator_uuid,
-                "absolute_path": str(full_path)
-            },
-            relative_path=relative_path
+            operator_data={"operator_uuid": operator_uuid, "absolute_path": str(full_path)},
+            relative_path=relative_path,
         )
-        
+
         logger.info(f"Prepared ManualHPC run for task {task.task_id} at {relative_path}")
         return handle
 
@@ -91,7 +85,7 @@ class ManualHPCOperator(Operator):
             if handle.status in [ExternalRunStatus.WAITING_EXTERNAL, ExternalRunStatus.COMPLETED]:
                 return handle
             logger.warning(f"Submit called on handle with status {handle.status}")
-            
+
         handle.status = ExternalRunStatus.WAITING_EXTERNAL
         logger.info(f"Task {handle.task_id} is now WAITING_EXTERNAL for manual execution.")
         return handle
@@ -103,12 +97,12 @@ class ManualHPCOperator(Operator):
         """
         if handle.status == ExternalRunStatus.COMPLETED:
             return handle
-            
+
         path_str = handle.operator_data.get("absolute_path")
         if not path_str:
             logger.error(f"Cannot check status: absolute_path missing for {handle.task_id}")
             return handle
-            
+
         op_dir = Path(path_str)
         if not op_dir.exists():
             # If the directory is gone, maybe it failed? Or we are on a different machine?
@@ -123,7 +117,7 @@ class ManualHPCOperator(Operator):
                 with open(status_file, "r") as f:
                     try:
                         status_manifest = ManualHPCStatusManifest.model_validate_json(f.read())
-                        
+
                         if status_manifest.status == ExternalStatus.COMPLETED:
                             handle.status = ExternalRunStatus.COMPLETED
                             logger.info(f"Task {handle.task_id} completed (found status.json).")
@@ -148,7 +142,7 @@ class ManualHPCOperator(Operator):
             if has_files:
                 handle.status = ExternalRunStatus.COMPLETED
                 logger.info(f"Task {handle.task_id} completed (found files in output/).")
-                
+
         return handle
 
     def collect_results(self, handle: ExternalRunHandle) -> OperatorResult:
@@ -157,17 +151,17 @@ class ManualHPCOperator(Operator):
         """
         path_str = handle.operator_data.get("absolute_path")
         if not path_str:
-             return OperatorResult(
+            return OperatorResult(
                 task_id=handle.task_id,
                 status=ExternalRunStatus.FAILED,
-                error_message="Missing absolute_path in operator_data"
+                error_message="Missing absolute_path in operator_data",
             )
-            
+
         op_dir = Path(path_str)
         output_dir = op_dir / "output"
-        
+
         result_files = {}
-        
+
         # Collect files from output directory
         if output_dir.exists():
             for f in output_dir.rglob("*"):
@@ -175,9 +169,5 @@ class ManualHPCOperator(Operator):
                     # Key relative to output dir
                     rel_name = f.relative_to(output_dir).as_posix()
                     result_files[rel_name] = f
-        
-        return OperatorResult(
-            task_id=handle.task_id,
-            status=handle.status,
-            files=result_files
-        )
+
+        return OperatorResult(task_id=handle.task_id, status=handle.status, files=result_files)

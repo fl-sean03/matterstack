@@ -1,13 +1,14 @@
 from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Dict
 from pathlib import Path
+from typing import Dict, List, Optional
 
 from matterstack.storage.state_store import SQLiteStateStore
-from matterstack.core.operators import ExternalRunStatus
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class BlockingItem:
@@ -18,6 +19,7 @@ class BlockingItem:
     hint: Optional[str] = None
     path: Optional[str] = None
 
+
 def get_status_hint(operator_type: str, operator_data: Dict, run_root: Path) -> str:
     """
     Generate a helpful hint for the user based on the operator type.
@@ -27,7 +29,7 @@ def get_status_hint(operator_type: str, operator_data: Dict, run_root: Path) -> 
         return "Check operator logs."
 
     op_path = Path(path_str)
-    
+
     # Try to make path relative to run root for cleaner display
     try:
         display_path = op_path.relative_to(run_root)
@@ -40,13 +42,14 @@ def get_status_hint(operator_type: str, operator_data: Dict, run_root: Path) -> 
         return f"Waiting for status.json or output files in {display_path}/output."
     elif operator_type == "Experiment":
         return f"Waiting for result.json in {display_path}."
-    
+
     return f"External operator active at {display_path}."
+
 
 def get_run_frontier(store: SQLiteStateStore, run_id: str, run_root: Path) -> List[BlockingItem]:
     """
     Identify tasks that are blocking the progress of the run.
-    
+
     The frontier consists of:
     1. Tasks waiting for external action (WAITING_EXTERNAL).
     2. Tasks currently running (RUNNING).
@@ -57,39 +60,37 @@ def get_run_frontier(store: SQLiteStateStore, run_id: str, run_root: Path) -> Li
         return []
 
     task_status_map = {t.task_id: store.get_task_status(t.task_id) for t in tasks}
-    
+
     blocking_items = []
-    
+
     for task in tasks:
         status = task_status_map.get(task.task_id)
-        
+
         # Case 1: Waiting for External Action
         if status == "WAITING_EXTERNAL":
             ext_handle = store.get_external_run(task.task_id)
             if ext_handle:
                 hint = get_status_hint(ext_handle.operator_type, ext_handle.operator_data, run_root)
-                blocking_items.append(BlockingItem(
-                    task_id=task.task_id,
-                    status=status,
-                    reason="Waiting for operator completion",
-                    operator_type=ext_handle.operator_type,
-                    hint=hint,
-                    path=ext_handle.operator_data.get("absolute_path")
-                ))
+                blocking_items.append(
+                    BlockingItem(
+                        task_id=task.task_id,
+                        status=status,
+                        reason="Waiting for operator completion",
+                        operator_type=ext_handle.operator_type,
+                        hint=hint,
+                        path=ext_handle.operator_data.get("absolute_path"),
+                    )
+                )
             else:
-                blocking_items.append(BlockingItem(
-                    task_id=task.task_id,
-                    status=status,
-                    reason="Marked as external but no handle found."
-                ))
-                
+                blocking_items.append(
+                    BlockingItem(task_id=task.task_id, status=status, reason="Marked as external but no handle found.")
+                )
+
         # Case 2: Currently Running
         elif status == "RUNNING":
-             blocking_items.append(BlockingItem(
-                task_id=task.task_id,
-                status=status,
-                reason="System is executing this task."
-            ))
+            blocking_items.append(
+                BlockingItem(task_id=task.task_id, status=status, reason="System is executing this task.")
+            )
 
         # Case 3: Pending
         elif status == "PENDING" or status is None:
@@ -101,18 +102,20 @@ def get_run_frontier(store: SQLiteStateStore, run_id: str, run_root: Path) -> Li
                 if dep_status != "COMPLETED":
                     deps_met = False
                     missing_deps.append(dep_id)
-            
+
             if deps_met:
-                blocking_items.append(BlockingItem(
-                    task_id=task.task_id,
-                    status="READY", # It's pending but ready
-                    reason="Ready to run. Waiting for scheduler or concurrency slot."
-                ))
+                blocking_items.append(
+                    BlockingItem(
+                        task_id=task.task_id,
+                        status="READY",  # It's pending but ready
+                        reason="Ready to run. Waiting for scheduler or concurrency slot.",
+                    )
+                )
             else:
                 # If dependencies are not met, this task is blocked by upstream tasks.
                 # We don't list it as a *primary* blocker unless all upstream tasks are completed/failed?
                 # No, if dependencies are missing, the *missing dependencies* are the ones in the frontier (or their deps).
                 # So we skip this task, as it's not the "frontier".
                 pass
-                
+
     return blocking_items

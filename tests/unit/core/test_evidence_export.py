@@ -1,11 +1,14 @@
 import json
-import pytest
 from pathlib import Path
-from matterstack.core.run import RunHandle
-from matterstack.core.workflow import Workflow, Task
+
+import pytest
+
 from matterstack.core.operators import ExternalRunStatus
-from matterstack.storage.state_store import SQLiteStateStore
+from matterstack.core.run import RunHandle
+from matterstack.core.workflow import Task, Workflow
 from matterstack.storage.export import build_evidence_bundle, export_evidence_bundle
+from matterstack.storage.state_store import SQLiteStateStore
+
 
 @pytest.fixture
 def temp_run_env(tmp_path):
@@ -13,15 +16,15 @@ def temp_run_env(tmp_path):
     run_root = tmp_path / "runs" / "test_run_123"
     run_root.mkdir(parents=True)
     db_path = run_root / "state.sqlite"
-    
+
     store = SQLiteStateStore(db_path)
-    
+
     handle = RunHandle(
         workspace_slug="test_ws",
         run_id="test_run_123",
         root_path=run_root
     )
-    
+
     return handle, store
 
 def test_build_evidence_bundle(temp_run_env):
@@ -120,10 +123,10 @@ def test_build_evidence_bundle(temp_run_env):
 
 def test_export_evidence_bundle(temp_run_env):
     handle, store = temp_run_env
-    
+
     # Create a dummy bundle directly
     from matterstack.core.evidence import EvidenceBundle
-    
+
     bundle = EvidenceBundle(
         run_id=handle.run_id,
         workspace_slug=handle.workspace_slug,
@@ -135,22 +138,22 @@ def test_export_evidence_bundle(temp_run_env):
         },
         artifacts={"t1": Path("/some/path")}
     )
-    
+
     # Export
     export_evidence_bundle(bundle, handle.root_path)
-    
+
     # Verify JSON
     json_path = handle.evidence_path / "bundle.json"
     assert json_path.exists()
     content = json.loads(json_path.read_text())
     assert content["run_id"] == handle.run_id
     assert content["data"]["tasks"]["t1"]["results"]["score"] == 99
-    
+
     # Verify Markdown
     md_path = handle.evidence_path / "report.md"
     assert md_path.exists()
     md_content = md_path.read_text()
-    
+
     assert "# Evidence Report: Run test_run_123" in md_content
     assert "| t1 | COMPLETED |" in md_content
     assert "score=99" in md_content
