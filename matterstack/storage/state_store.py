@@ -5,7 +5,7 @@ This module provides the SQLiteStateStore class, which is the main persistence
 layer for MatterStack. The class is composed of several mixin classes that
 provide specialized operations:
 
-- _MigrationsMixin: Schema migrations (v1→v2→v3)
+- _MigrationsMixin: Schema migrations (v1→v2→v3→v4)
 - _RunOperationsMixin: Run CRUD operations
 - _TaskOperationsMixin: Task CRUD operations
 - _ExternalRunOperationsMixin: External run operations (v1 legacy)
@@ -33,7 +33,7 @@ from matterstack.storage._run_operations import _RunOperationsMixin
 from matterstack.storage._task_operations import _TaskOperationsMixin
 from matterstack.storage.schema import Base, SchemaInfo
 
-CURRENT_SCHEMA_VERSION = "3"
+CURRENT_SCHEMA_VERSION = "4"
 
 # Re-export for backward compatibility
 __all__ = ["SQLiteStateStore", "CURRENT_SCHEMA_VERSION", "TASK_ATTEMPT_MIGRATION_NAMESPACE"]
@@ -56,7 +56,7 @@ class SQLiteStateStore(
     - Task management: add workflow, get tasks, update status
     - External run tracking (v1 legacy): register, update, get active
     - Task attempts (v2): create, list, update, get current
-    - Schema migrations: automatic upgrades from v1 to v3
+    - Schema migrations: automatic upgrades from v1 to v4
     - File locking: exclusive access for concurrent process safety
     """
 
@@ -93,6 +93,7 @@ class SQLiteStateStore(
         - v1: external_runs only
         - v2: task_attempts + tasks.current_attempt_id
         - v3: task_attempts.operator_key (canonical routing key)
+        - v4: tasks.operator_key (first-class operator routing)
         """
         with self.SessionLocal() as session:
             stmt = select(SchemaInfo).where(SchemaInfo.key == "version")
@@ -112,15 +113,23 @@ class SQLiteStateStore(
                 return
 
             # Supported additive migrations
-            if info.value == "1" and CURRENT_SCHEMA_VERSION in {"2", "3"}:
+            if info.value == "1" and CURRENT_SCHEMA_VERSION in {"2", "3", "4"}:
                 self._migrate_schema_v1_to_v2(session, info)
-                # If code expects v3, immediately migrate onward.
-                if CURRENT_SCHEMA_VERSION == "3":
+                # If code expects v3+, immediately migrate onward.
+                if CURRENT_SCHEMA_VERSION in {"3", "4"}:
                     self._migrate_schema_v2_to_v3(session, info)
+                if CURRENT_SCHEMA_VERSION == "4":
+                    self._migrate_schema_v3_to_v4(session, info)
                 return
 
-            if info.value == "2" and CURRENT_SCHEMA_VERSION == "3":
+            if info.value == "2" and CURRENT_SCHEMA_VERSION in {"3", "4"}:
                 self._migrate_schema_v2_to_v3(session, info)
+                if CURRENT_SCHEMA_VERSION == "4":
+                    self._migrate_schema_v3_to_v4(session, info)
+                return
+
+            if info.value == "3" and CURRENT_SCHEMA_VERSION == "4":
+                self._migrate_schema_v3_to_v4(session, info)
                 return
 
             raise RuntimeError(

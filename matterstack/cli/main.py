@@ -21,6 +21,7 @@ from matterstack.cli.commands import (
     cmd_rerun,
     cmd_attempts,
     cmd_cancel_attempt,
+    cmd_cleanup_orphans,
     cmd_status,
     cmd_explain,
     cmd_monitor,
@@ -181,6 +182,24 @@ def main():
     parser_reset.add_argument("--recursive", action="store_true", help="Include dependent tasks")
     parser_reset.add_argument("--force", action="store_true", help="Skip confirmation prompt")
     parser_reset.set_defaults(func=cmd_reset)
+
+    # cleanup-orphans
+    parser_cleanup = subparsers.add_parser(
+        "cleanup-orphans",
+        help="Find and clean up orphaned attempts (stuck in CREATED state)",
+    )
+    parser_cleanup.add_argument("--run-id", required=True, help="Run ID")
+    parser_cleanup.add_argument(
+        "--timeout",
+        default="1h",
+        help="Age threshold for orphan detection (e.g., 1h, 30m, 3600s). Default: 1h",
+    )
+    parser_cleanup.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Actually mark orphans as FAILED_INIT (without this flag, only lists)",
+    )
+    parser_cleanup.set_defaults(func=cmd_cleanup_orphans)
 
     args = parser.parse_args()
 

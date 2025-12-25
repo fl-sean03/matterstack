@@ -14,6 +14,7 @@ class ExternalRunStatus(str, Enum):
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    FAILED_INIT = "FAILED_INIT"  # Attempt created but submit() failed
     CANCELLED = "CANCELLED"
     WAITING_EXTERNAL = "WAITING_EXTERNAL"
 

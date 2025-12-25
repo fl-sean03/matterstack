@@ -7,13 +7,13 @@ provenance-safe reruns with 1:N execution history per logical task.
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 from sqlalchemy import func, select, update
 
+from matterstack.core.id_generator import generate_attempt_id
 from matterstack.core.operators import ExternalRunStatus
 from matterstack.storage.schema import TaskAttemptModel, TaskModel
 
@@ -60,7 +60,7 @@ class _AttemptOperationsMixin:
             )
             next_index = int(max_index or 0) + 1
 
-            attempt_id = str(uuid.uuid4())
+            attempt_id = generate_attempt_id()
 
             model = TaskAttemptModel(
                 attempt_id=attempt_id,
@@ -101,14 +101,37 @@ class _AttemptOperationsMixin:
             )
             return list(session.scalars(stmt).all())
 
+    def get_attempt_count(self, run_id: str, task_id: str) -> int:
+        """
+        Get the count of attempts for a task in a run.
+        
+        This is the current attempt_index value (1-based count of attempts).
+        
+        Args:
+            run_id: The run ID.
+            task_id: The task ID.
+        
+        Returns:
+            The count of attempts for this task, or 0 if none exist.
+        """
+        with self.SessionLocal() as session:
+            count = session.scalar(
+                select(func.count(TaskAttemptModel.attempt_id)).where(
+                    TaskAttemptModel.run_id == run_id,
+                    TaskAttemptModel.task_id == task_id,
+                )
+            )
+            return int(count or 0)
+
     def get_active_attempts(self, run_id: str) -> List[TaskAttemptModel]:
         """
         Get all attempts that are not in a terminal state.
-        Terminal states: COMPLETED, FAILED, CANCELLED
+        Terminal states: COMPLETED, FAILED, FAILED_INIT, CANCELLED
         """
         terminal_states = [
             ExternalRunStatus.COMPLETED.value,
             ExternalRunStatus.FAILED.value,
+            ExternalRunStatus.FAILED_INIT.value,
             ExternalRunStatus.CANCELLED.value,
         ]
 
@@ -118,6 +141,42 @@ class _AttemptOperationsMixin:
                 TaskAttemptModel.status.not_in(terminal_states),
             )
             return list(session.scalars(stmt).all())
+
+    def count_active_attempts_by_operator(self, run_id: str) -> Dict[str, int]:
+        """
+        Count active (non-terminal) attempts grouped by operator_key.
+
+        Used for per-operator concurrency limit enforcement. Returns a dict
+        mapping each operator_key to the number of currently active attempts.
+
+        Terminal states: COMPLETED, FAILED, FAILED_INIT, CANCELLED
+
+        Returns:
+            Dict mapping operator_key -> count of active attempts.
+            Attempts with None operator_key are mapped to empty string "".
+        """
+        terminal_states = [
+            ExternalRunStatus.COMPLETED.value,
+            ExternalRunStatus.FAILED.value,
+            ExternalRunStatus.FAILED_INIT.value,
+            ExternalRunStatus.CANCELLED.value,
+        ]
+
+        with self.SessionLocal() as session:
+            stmt = (
+                select(
+                    TaskAttemptModel.operator_key,
+                    func.count(TaskAttemptModel.attempt_id),
+                )
+                .where(
+                    TaskAttemptModel.run_id == run_id,
+                    TaskAttemptModel.status.not_in(terminal_states),
+                )
+                .group_by(TaskAttemptModel.operator_key)
+            )
+            rows = session.execute(stmt).all()
+            # Map None operator_key to empty string for easier handling
+            return {key or "": count for key, count in rows}
 
     def get_current_attempt(self, task_id: str) -> Optional[TaskAttemptModel]:
         """
@@ -214,9 +273,78 @@ class _AttemptOperationsMixin:
                 terminal = {
                     ExternalRunStatus.COMPLETED.value,
                     ExternalRunStatus.FAILED.value,
+                    ExternalRunStatus.FAILED_INIT.value,
                     ExternalRunStatus.CANCELLED.value,
                 }
                 if status in terminal and model.ended_at is None:
                     model.ended_at = now
 
             session.commit()
+
+    def find_orphaned_attempts(
+        self,
+        run_id: str,
+        timeout_seconds: int = 3600,
+    ) -> List[TaskAttemptModel]:
+        """
+        Find orphaned attempts that are stuck in CREATED state.
+
+        An attempt is orphaned if:
+        - Status is CREATED (never submitted)
+        - No external_id assigned
+        - created_at is older than timeout_seconds
+
+        Args:
+            run_id: The run ID to search.
+            timeout_seconds: Age threshold in seconds (default 1 hour).
+
+        Returns:
+            List of orphaned attempt models.
+        """
+        from datetime import timedelta
+
+        cutoff = datetime.utcnow() - timedelta(seconds=timeout_seconds)
+
+        with self.SessionLocal() as session:
+            stmt = select(TaskAttemptModel).where(
+                TaskAttemptModel.run_id == run_id,
+                TaskAttemptModel.status == ExternalRunStatus.CREATED.value,
+                TaskAttemptModel.external_id.is_(None),
+                TaskAttemptModel.created_at < cutoff,
+            )
+            return list(session.scalars(stmt).all())
+
+    def mark_attempts_failed_init(
+        self,
+        attempt_ids: List[str],
+        reason: str = "Orphan cleanup",
+    ) -> int:
+        """
+        Mark multiple attempts as FAILED_INIT.
+
+        Args:
+            attempt_ids: List of attempt IDs to mark.
+            reason: Status reason to record.
+
+        Returns:
+            Number of attempts updated.
+        """
+        from sqlalchemy import update as sql_update
+
+        if not attempt_ids:
+            return 0
+
+        with self.SessionLocal() as session:
+            now = datetime.utcnow()
+            stmt = (
+                sql_update(TaskAttemptModel)
+                .where(TaskAttemptModel.attempt_id.in_(attempt_ids))
+                .values(
+                    status=ExternalRunStatus.FAILED_INIT.value,
+                    status_reason=reason,
+                    ended_at=now,
+                )
+            )
+            result = session.execute(stmt)
+            session.commit()
+            return result.rowcount

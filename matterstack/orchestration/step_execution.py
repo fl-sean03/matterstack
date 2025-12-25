@@ -14,7 +14,9 @@ from matterstack.core.campaign import Campaign
 from matterstack.core.operators import ExternalRunStatus
 from matterstack.core.external import ExternalTask
 from matterstack.core.gate import GateTask
+from matterstack.core.lifecycle import AttemptLifecycleHook
 from matterstack.storage.state_store import SQLiteStateStore
+from matterstack.config.operators import OperatorsConfig
 
 from matterstack.orchestration.polling import (
     task_status_from_external_status,
@@ -28,6 +30,7 @@ from matterstack.orchestration.dispatch import (
     submit_task_to_operator,
     submit_external_task_stub,
     submit_local_simulation,
+    resolve_operator_key_for_dispatch,
 )
 from matterstack.orchestration.analyze import execute_analyze_phase
 
@@ -73,10 +76,16 @@ def _build_default_operator_registry(run_handle: RunHandle) -> Dict[str, Any]:
     }
 
 
+# Default global concurrency limit when no config is provided
+DEFAULT_MAX_CONCURRENT_GLOBAL = 50
+
+
 def step_run(
     run_handle: RunHandle,
     campaign: Campaign,
-    operator_registry: Optional[Dict[str, Any]] = None
+    operator_registry: Optional[Dict[str, Any]] = None,
+    operators_config: Optional[OperatorsConfig] = None,
+    lifecycle_hooks: Optional[AttemptLifecycleHook] = None,
 ) -> str:
     """
     Execute one 'tick' of the run lifecycle.
@@ -84,13 +93,15 @@ def step_run(
     This function orchestrates:
     1. POLL Phase: Check status of active attempts and external runs
     2. PLAN Phase: Check dependencies and find ready tasks
-    3. EXECUTE Phase: Submit ready tasks to operators
+    3. EXECUTE Phase: Submit ready tasks to operators (with per-operator concurrency limits)
     4. ANALYZE Phase: If workflow complete, analyze and replan
     
     Args:
         run_handle: The handle to the run.
         campaign: The campaign instance.
         operator_registry: Optional operator registry. If None, a default is built.
+        operators_config: Optional operators.yaml config with per-operator limits.
+        lifecycle_hooks: Optional lifecycle hooks to fire during attempt processing.
     
     Returns:
         Current status of the run ("active", "completed", "failed", "PAUSED", etc.)
@@ -125,7 +136,7 @@ def step_run(
         attempt_task_ids = store.get_attempt_task_ids(run_handle.run_id)
         
         # Poll active attempts (v2)
-        poll_active_attempts(run_handle.run_id, store, operators)
+        poll_active_attempts(run_handle.run_id, store, operators, lifecycle_hooks)
         
         # Poll legacy external runs (v1 fallback) ONLY for tasks that have no attempts
         poll_legacy_external_runs(run_handle.run_id, store, operators, attempt_task_ids)
@@ -212,19 +223,32 @@ def step_run(
 
         # 3. EXECUTE Phase
         
-        # Determine concurrency limit
-        max_hpc_jobs = get_max_hpc_jobs(run_handle)
+        # Build per-operator limits and global limit from config
+        operator_limits: Dict[str, Optional[int]] = {}
+        global_limit: int = DEFAULT_MAX_CONCURRENT_GLOBAL
+        
+        if operators_config:
+            # Use per-operator limits from operators.yaml
+            global_limit = operators_config.defaults.max_concurrent_global or DEFAULT_MAX_CONCURRENT_GLOBAL
+            for op_key, op_cfg in operators_config.operators.items():
+                operator_limits[op_key] = op_cfg.max_concurrent
+            logger.info(f"Using per-operator limits from operators.yaml (global={global_limit})")
+        else:
+            # Legacy: use global max_hpc_jobs from config.json
+            global_limit = get_max_hpc_jobs(run_handle)
+            logger.info(f"Using legacy global limit from config.json: {global_limit}")
+        
         config_path = run_handle.root_path / "config.json"
-        logger.info(f"Checking for config at: {config_path}")
+        logger.debug(f"Checking for config at: {config_path}")
 
-        # Count active executions for concurrency (attempt-aware)
-        active_external_count, slots_available = calculate_concurrency_slots(
-            run_handle, store, max_hpc_jobs
-        )
-            
-        logger.info(f"Concurrency Check: Active={active_external_count}, Limit={max_hpc_jobs}, Slots={slots_available}")
+        # Count active executions per operator for per-operator concurrency
+        active_by_operator = store.count_active_attempts_by_operator(run_handle.run_id)
+        
+        # Also get global count for legacy logging
+        active_external_count, _ = calculate_concurrency_slots(run_handle, store, global_limit)
+        logger.info(f"Concurrency Check: Total Active={active_external_count}, Global Limit={global_limit}")
 
-        # Submit ready tasks (up to limit)
+        # Submit ready tasks (respecting per-operator limits)
         for task in tasks_to_run:
             operator_type = determine_operator_type(task, run_handle)
             
@@ -232,17 +256,36 @@ def step_run(
             is_external = operator_type is not None or isinstance(task, (ExternalTask, GateTask))
             
             if is_external:
-                if slots_available <= 0:
-                    logger.info(f"Concurrency limit reached ({max_hpc_jobs}). Postponing task {task.task_id}")
+                # Resolve to canonical operator key
+                canonical_key = resolve_operator_key_for_dispatch(operator_type) or ""
+                
+                # Determine limit for this operator
+                # None means "inherit from global", an explicit integer is used as-is
+                if canonical_key in operator_limits and operator_limits[canonical_key] is not None:
+                    limit = operator_limits[canonical_key]
+                else:
+                    limit = global_limit  # Fallback to global
+                
+                # Check if this operator has available slots
+                active = active_by_operator.get(canonical_key, 0)
+                
+                if active >= limit:
+                    logger.info(
+                        f"Concurrency limit reached for {canonical_key or 'unknown'} "
+                        f"({active}/{limit}). Postponing task {task.task_id}"
+                    )
                     continue
-                slots_available -= 1
+                
+                # Track that we're using a slot for this operator
+                active_by_operator[canonical_key] = active + 1
 
             logger.info(f"Submitting task {task.task_id}")
 
             if operator_type:
                 # v2: Create attempt first, then dispatch to operator
                 success = submit_task_to_operator(
-                    task, operator_type, run_handle, store, operators
+                    task, operator_type, run_handle, store, operators,
+                    lifecycle_hooks=lifecycle_hooks,
                 )
                 if success:
                     has_active_tasks = True

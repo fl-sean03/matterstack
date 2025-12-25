@@ -56,7 +56,8 @@ class _TaskOperationsMixin:
                     "allow_dependency_failure": task.allow_dependency_failure,
                     "allow_failure": task.allow_failure,
                     "download_patterns": task.download_patterns,
-                    "task_type": task.__class__.__name__
+                    "task_type": task.__class__.__name__,
+                    "operator_key": getattr(task, "operator_key", None),  # v0.2.6+ first-class routing
                 }
 
                 if existing_task:
@@ -105,7 +106,8 @@ class _TaskOperationsMixin:
                     time_limit_minutes=tm.time_limit_minutes,
                     allow_dependency_failure=tm.allow_dependency_failure,
                     allow_failure=tm.allow_failure,
-                    download_patterns=tm.download_patterns
+                    download_patterns=tm.download_patterns,
+                    operator_key=tm.operator_key,  # v0.2.6+ first-class routing
                 )
                 tasks.append(task)
             return tasks

@@ -99,6 +99,7 @@ class OperatorInstanceConfig(BaseModel):
       operators:
         hpc.default:
           kind: hpc
+          max_concurrent: 5  # Optional per-operator limit
           ...
 
     Validation rules:
@@ -127,6 +128,12 @@ class OperatorInstanceConfig(BaseModel):
     # We keep it as a strictly-validated mapping for forward compatibility.
     api: Optional[Dict[str, Any]] = None
 
+    # Per-operator concurrency limit (v0.2.6+).
+    # - None (default): inherit from defaults.max_concurrent_global
+    # - Positive int: limit concurrent attempts for this operator
+    # - Explicit null in YAML: unlimited (no limit applied)
+    max_concurrent: Optional[int] = None
+
     @model_validator(mode="after")
     def _validate_kind_semantics(self) -> "OperatorInstanceConfig":
         if self.kind in ("hpc", "local"):
@@ -146,6 +153,34 @@ class OperatorInstanceConfig(BaseModel):
 
         return self
 
+    @model_validator(mode="after")
+    def _validate_max_concurrent(self) -> "OperatorInstanceConfig":
+        if self.max_concurrent is not None and self.max_concurrent < 1:
+            raise ValueError("max_concurrent must be a positive integer or null/omitted")
+        return self
+
+
+class DefaultsConfig(BaseModel):
+    """
+    Workspace-level defaults for operators.yaml.
+
+    Example:
+      defaults:
+        max_concurrent_global: 50
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Global concurrency limit for operators that don't specify max_concurrent.
+    # None = use hardcoded default (50).
+    max_concurrent_global: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _validate_global(self) -> "DefaultsConfig":
+        if self.max_concurrent_global is not None and self.max_concurrent_global < 1:
+            raise ValueError("max_concurrent_global must be a positive integer or null/omitted")
+        return self
+
 
 @dataclass(frozen=True)
 class OperatorsConfig:
@@ -153,10 +188,12 @@ class OperatorsConfig:
     Parsed operators.yaml content.
 
     operators: mapping of canonical operator_key -> validated instance config
+    defaults: workspace-level defaults (optional section)
     path: path to the file that produced this config (for error messages)
     """
 
     operators: Dict[str, OperatorInstanceConfig]
+    defaults: DefaultsConfig
     path: Path
 
 
@@ -170,12 +207,37 @@ def parse_operators_config_dict(data: Any, *, path: Union[str, Path]) -> Operato
     """
     Parse a loaded YAML object into an OperatorsConfig.
 
+    Supports the following structure:
+
+      defaults:                      # Optional
+        max_concurrent_global: 50
+
+      operators:                     # Required
+        hpc.default:
+          kind: hpc
+          max_concurrent: 5
+          ...
+
     Raises:
         OperatorsConfigError on any validation/shape error.
     """
     p = Path(path)
 
     top = _ensure_mapping(data or {}, what="top-level", path=p)
+
+    # Parse defaults section (optional)
+    defaults_raw = top.get("defaults")
+    if defaults_raw is None:
+        defaults = DefaultsConfig()
+    else:
+        if not isinstance(defaults_raw, Mapping):
+            raise OperatorsConfigError(f"{p}: 'defaults' must be a YAML mapping/object")
+        try:
+            defaults = DefaultsConfig.model_validate(defaults_raw)
+        except ValidationError as exc:
+            raise OperatorsConfigError(f"{p}: invalid 'defaults' section: {exc}") from exc
+
+    # Parse operators section (required)
     operators_raw = top.get("operators")
     if operators_raw is None:
         raise OperatorsConfigError(f"{p}: missing required top-level key 'operators'")
@@ -227,7 +289,7 @@ def parse_operators_config_dict(data: Any, *, path: Union[str, Path]) -> Operato
 
         parsed[normalized_key] = inst
 
-    return OperatorsConfig(operators=parsed, path=p)
+    return OperatorsConfig(operators=parsed, defaults=defaults, path=p)
 
 
 def load_operators_config(path: Union[str, Path]) -> OperatorsConfig:

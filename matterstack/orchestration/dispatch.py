@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, TYPE_CHECKING
 
 from matterstack.core.run import RunHandle
 from matterstack.core.workflow import Task
@@ -19,6 +19,11 @@ from matterstack.core.operator_keys import (
     is_canonical_operator_key,
     legacy_operator_type_to_key,
     normalize_operator_key,
+)
+from matterstack.core.lifecycle import (
+    AttemptContext,
+    AttemptLifecycleHook,
+    fire_hook_safely,
 )
 
 logger = logging.getLogger(__name__)
@@ -151,7 +156,7 @@ def determine_operator_type(
     """
     Determine the effective operator type for a task.
     
-    Priority: Task Env > Task Type > Config Default
+    Priority: Task operator_key > Task Env > Task Type > Config Default
     
     Args:
         task: The task to check.
@@ -160,7 +165,11 @@ def determine_operator_type(
     Returns:
         The operator type string, or None for local simulation.
     """
-    # Check environment for explicit operator request
+    # Priority 1: First-class operator_key on Task (v0.2.6+)
+    if hasattr(task, "operator_key") and task.operator_key:
+        return task.operator_key
+    
+    # Priority 2: Environment override (legacy)
     explicit_operator = task.env.get("MATTERSTACK_OPERATOR")
     
     if explicit_operator:
@@ -185,6 +194,7 @@ def submit_task_to_operator(
     run_handle: RunHandle,
     store: Any,
     operators: Dict[str, Any],
+    lifecycle_hooks: Optional[AttemptLifecycleHook] = None,
 ) -> bool:
     """
     Submit a task to an operator.
@@ -197,6 +207,7 @@ def submit_task_to_operator(
         run_handle: The run handle.
         store: The SQLiteStateStore instance.
         operators: The operator registry dict.
+        lifecycle_hooks: Optional lifecycle hooks to fire during attempt processing.
     
     Returns:
         True if successful, False if operator not found or error.
@@ -234,6 +245,7 @@ def submit_task_to_operator(
     )
 
     attempt_id: Optional[str] = None
+    attempt_context: Optional[AttemptContext] = None
     try:
         attempt_id = store.create_attempt(
             run_id=run_handle.run_id,
@@ -244,6 +256,20 @@ def submit_task_to_operator(
             operator_data={},
             relative_path=None,
         )
+
+        # Build attempt context for lifecycle hooks
+        # Get attempt_index from store (count of attempts for this task)
+        attempt_index = store.get_attempt_count(run_handle.run_id, task.task_id)
+        attempt_context = AttemptContext(
+            run_id=run_handle.run_id,
+            task_id=task.task_id,
+            attempt_id=attempt_id,
+            operator_key=canonical_operator_key,
+            attempt_index=attempt_index,
+        )
+
+        # Fire on_create lifecycle hook
+        fire_hook_safely(lifecycle_hooks, "on_create", attempt_context)
 
         # 1. Prepare (operator directory, manifests, etc.)
         ext_handle = op.prepare_run(run_handle, task)
@@ -264,6 +290,11 @@ def submit_task_to_operator(
             external_id=ext_handle.external_id,
             operator_data=ext_handle.operator_data,
             relative_path=ext_handle.relative_path,
+        )
+
+        # Fire on_submit lifecycle hook
+        fire_hook_safely(
+            lifecycle_hooks, "on_submit", attempt_context, ext_handle.external_id
         )
 
         # Update Task Status (SUBMITTED -> WAITING_EXTERNAL)
@@ -289,12 +320,17 @@ def submit_task_to_operator(
             try:
                 store.update_attempt(
                     attempt_id,
-                    status=ExternalRunStatus.FAILED.value,
+                    status=ExternalRunStatus.FAILED_INIT.value,
                     operator_data={"error": str(e)},
                     status_reason=str(e),
                 )
             except Exception:
                 pass
+
+            # Fire on_fail lifecycle hook
+            if attempt_context is not None:
+                fire_hook_safely(lifecycle_hooks, "on_fail", attempt_context, str(e))
+
         store.update_task_status(task.task_id, "FAILED")
         return False
 

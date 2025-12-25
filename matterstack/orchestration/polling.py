@@ -14,6 +14,11 @@ from matterstack.core.operator_keys import (
     resolve_operator_key_for_attempt,
     legacy_operator_type_to_key,
 )
+from matterstack.core.lifecycle import (
+    AttemptContext,
+    AttemptLifecycleHook,
+    fire_hook_safely,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +30,7 @@ def task_status_from_external_status(s: ExternalRunStatus) -> str:
     Status mapping (attempt/external status -> task status):
     - SUBMITTED maps to WAITING_EXTERNAL for user-facing stability in v0.2.5.
     - CREATED maps to PENDING.
-    - RUNNING, COMPLETED, FAILED, CANCELLED map directly.
+    - RUNNING, COMPLETED, FAILED, FAILED_INIT, CANCELLED map directly.
     
     Args:
         s: The external run status.
@@ -44,6 +49,8 @@ def task_status_from_external_status(s: ExternalRunStatus) -> str:
     if s == ExternalRunStatus.COMPLETED:
         return "COMPLETED"
     if s == ExternalRunStatus.FAILED:
+        return "FAILED"
+    if s == ExternalRunStatus.FAILED_INIT:
         return "FAILED"
     if s == ExternalRunStatus.CANCELLED:
         return "CANCELLED"
@@ -94,20 +101,63 @@ def poll_active_attempts(
     run_id: str,
     store: Any,
     operators: Dict[str, Any],
+    lifecycle_hooks: Optional[AttemptLifecycleHook] = None,
+    stuck_timeout_seconds: int = 3600,
 ) -> None:
     """
     Poll active attempts and update their status.
     
     This is the v2 primary path for attempt-aware polling.
+    Also detects stuck attempts (CREATED with no external_id past timeout).
     
     Args:
         run_id: The run ID.
         store: The SQLiteStateStore instance.
         operators: The operator registry dict.
+        lifecycle_hooks: Optional lifecycle hooks to fire on terminal state transitions.
+        stuck_timeout_seconds: Timeout in seconds to detect stuck attempts (default 1 hour).
     """
+    from datetime import datetime, timedelta
+    
     active_attempts = store.get_active_attempts(run_id)
+    cutoff = datetime.utcnow() - timedelta(seconds=stuck_timeout_seconds)
 
     for attempt in active_attempts:
+        # Detect stuck attempts: CREATED with no external_id past timeout
+        if (
+            attempt.status == ExternalRunStatus.CREATED.value
+            and attempt.external_id is None
+            and attempt.created_at is not None
+            and attempt.created_at < cutoff
+        ):
+            logger.warning(
+                f"Attempt {attempt.attempt_id} stuck in CREATED state for "
+                f"> {stuck_timeout_seconds}s with no external_id, marking FAILED_INIT"
+            )
+            store.update_attempt(
+                attempt.attempt_id,
+                status=ExternalRunStatus.FAILED_INIT.value,
+                status_reason=f"Stuck in CREATED state; no external_id after {stuck_timeout_seconds}s",
+            )
+            store.update_task_status(attempt.task_id, "FAILED")
+            
+            # Fire on_fail lifecycle hook
+            if lifecycle_hooks:
+                context = AttemptContext(
+                    run_id=run_id,
+                    task_id=attempt.task_id,
+                    attempt_id=attempt.attempt_id,
+                    operator_key=getattr(attempt, "operator_key", None),
+                    attempt_index=getattr(attempt, "attempt_index", 1),
+                )
+                fire_hook_safely(
+                    lifecycle_hooks,
+                    "on_fail",
+                    context,
+                    "Stuck in CREATED state; marked FAILED_INIT",
+                )
+            continue
+
         if not attempt.operator_type and not getattr(attempt, "operator_key", None):
             # "stub" / incomplete attempts won't be polled; we still heal task status below.
             store.update_task_status(
@@ -168,6 +218,26 @@ def poll_active_attempts(
                 operator_data=updated_handle.operator_data,
                 relative_path=updated_handle.relative_path,
             )
+
+            # Fire lifecycle hooks on terminal state transitions
+            if old_status != updated_handle.status:
+                if updated_handle.status in [ExternalRunStatus.COMPLETED, ExternalRunStatus.FAILED]:
+                    # Build context for lifecycle hooks
+                    context = AttemptContext(
+                        run_id=run_id,
+                        task_id=attempt.task_id,
+                        attempt_id=attempt.attempt_id,
+                        operator_key=getattr(attempt, "operator_key", None),
+                        attempt_index=getattr(attempt, "attempt_index", 1),
+                    )
+                    
+                    if updated_handle.status == ExternalRunStatus.COMPLETED:
+                        fire_hook_safely(lifecycle_hooks, "on_complete", context, True)
+                    elif updated_handle.status == ExternalRunStatus.FAILED:
+                        error = updated_handle.operator_data.get("error", "Unknown error")
+                        if not error and hasattr(attempt, "status_reason") and attempt.status_reason:
+                            error = attempt.status_reason
+                        fire_hook_safely(lifecycle_hooks, "on_fail", context, str(error))
 
             # Heal/sync task status from attempt status (even if unchanged)
             store.update_task_status(

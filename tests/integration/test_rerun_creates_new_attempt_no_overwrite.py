@@ -71,7 +71,7 @@ def test_rerun_creates_new_attempt_without_overwriting_attempt_evidence(tmp_path
                 task_id=compute_task_id,
                 image="ubuntu:latest",
                 command="python3 write_sentinel.py",
-                env={"MATTERSTACK_OPERATOR": "HPC"},
+                operator_key="HPC",  # v0.2.6+ first-class routing
                 files={
                     "write_sentinel.py": (
                         "from pathlib import Path\n"

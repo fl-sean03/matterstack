@@ -2,13 +2,20 @@
 Unit tests for matterstack/cli/utils.py
 
 Tests nested workspace path support for load_workspace_context() and find_run().
+Tests multi-level resolution for workspaces root discovery.
 """
 import pytest
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
-from matterstack.cli.utils import load_workspace_context, find_run
+from matterstack.cli.utils import (
+    load_workspace_context,
+    find_run,
+    _resolve_workspaces_root,
+    _find_project_root,
+    _ENV_WORKSPACES_ROOT,
+)
 from matterstack.core.run import RunHandle
 
 
@@ -347,3 +354,278 @@ def get_campaign():
         assert result is not None
         assert result.workspace_slug == "battery_screening"
         assert result.run_id == "20251127_021548_afaaeba1"
+
+
+class TestWorkspacesRootResolution:
+    """Tests for _resolve_workspaces_root() multi-level resolution."""
+
+    def test_env_var_takes_priority(self, tmp_path, monkeypatch):
+        """Environment variable overrides all other resolution methods."""
+        # Setup: both pyproject.toml and local workspaces exist
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='test'\n")
+        (tmp_path / "workspaces").mkdir()
+        
+        # Env var points to different location
+        env_workspaces = tmp_path / "custom_workspaces"
+        env_workspaces.mkdir()
+        
+        monkeypatch.setenv(_ENV_WORKSPACES_ROOT, str(env_workspaces))
+        monkeypatch.chdir(tmp_path)
+        
+        result = _resolve_workspaces_root()
+        
+        assert result == env_workspaces
+
+    def test_env_var_path_returned_even_if_nonexistent(self, tmp_path, monkeypatch):
+        """Env var path returned even if doesn't exist (let caller handle)."""
+        nonexistent = tmp_path / "does_not_exist"
+        monkeypatch.setenv(_ENV_WORKSPACES_ROOT, str(nonexistent))
+        monkeypatch.chdir(tmp_path)
+        
+        result = _resolve_workspaces_root()
+        
+        assert result == nonexistent
+        assert not result.exists()
+
+    def test_project_root_detection_via_pyproject(self, tmp_path, monkeypatch):
+        """Finds workspaces via pyproject.toml when running from subdirectory."""
+        # Setup: project root with pyproject.toml and workspaces
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / "pyproject.toml").write_text("[project]\nname='test'\n")
+        (project_root / "workspaces").mkdir()
+        
+        # CWD is a subdirectory
+        subdir = project_root / "src" / "module"
+        subdir.mkdir(parents=True)
+        
+        monkeypatch.chdir(subdir)
+        
+        result = _resolve_workspaces_root()
+        
+        assert result == project_root / "workspaces"
+
+    def test_hardcoded_fallback_from_project_root(self, tmp_path, monkeypatch):
+        """Hardcoded Path('workspaces') works when at project root."""
+        # No pyproject.toml, just workspaces directory
+        (tmp_path / "workspaces").mkdir()
+        monkeypatch.chdir(tmp_path)
+        
+        result = _resolve_workspaces_root()
+        
+        assert result == Path("workspaces")
+
+    def test_returns_none_when_nothing_found(self, tmp_path, monkeypatch):
+        """Returns None when no resolution strategy succeeds."""
+        # Empty directory, no pyproject.toml, no workspaces
+        monkeypatch.chdir(tmp_path)
+        
+        result = _resolve_workspaces_root()
+        
+        assert result is None
+
+
+class TestFindProjectRoot:
+    """Tests for _find_project_root() helper."""
+
+    def test_finds_pyproject_in_cwd(self, tmp_path, monkeypatch):
+        """Finds pyproject.toml in current directory."""
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='test'\n")
+        monkeypatch.chdir(tmp_path)
+        
+        result = _find_project_root()
+        
+        assert result == tmp_path.resolve()
+
+    def test_finds_pyproject_in_parent(self, tmp_path, monkeypatch):
+        """Finds pyproject.toml in parent directory."""
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='test'\n")
+        subdir = tmp_path / "src" / "module"
+        subdir.mkdir(parents=True)
+        monkeypatch.chdir(subdir)
+        
+        result = _find_project_root()
+        
+        assert result == tmp_path.resolve()
+
+    def test_finds_pyproject_deeply_nested(self, tmp_path, monkeypatch):
+        """Finds pyproject.toml from deeply nested subdirectory."""
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='test'\n")
+        deep_dir = tmp_path / "a" / "b" / "c" / "d" / "e"
+        deep_dir.mkdir(parents=True)
+        monkeypatch.chdir(deep_dir)
+        
+        result = _find_project_root()
+        
+        assert result == tmp_path.resolve()
+
+    def test_returns_none_when_no_pyproject(self, tmp_path, monkeypatch):
+        """Returns None when no pyproject.toml found."""
+        monkeypatch.chdir(tmp_path)
+        
+        result = _find_project_root()
+        
+        assert result is None
+
+
+class TestFindRunWithResolution:
+    """Tests for find_run() using automatic resolution."""
+
+    def test_find_run_with_env_var(self, tmp_path, monkeypatch):
+        """find_run() works with MATTERSTACK_WORKSPACES_ROOT set."""
+        # Setup: workspaces in non-standard location
+        custom_ws = tmp_path / "custom" / "workspaces"
+        run_dir = custom_ws / "my_workspace" / "runs" / "test_run_123"
+        run_dir.mkdir(parents=True)
+        
+        monkeypatch.setenv(_ENV_WORKSPACES_ROOT, str(custom_ws))
+        monkeypatch.chdir(tmp_path)
+        
+        result = find_run("test_run_123")
+        
+        assert result is not None
+        assert result.workspace_slug == "my_workspace"
+        assert result.run_id == "test_run_123"
+
+    def test_find_run_from_workspace_subdirectory(self, tmp_path, monkeypatch):
+        """find_run() works when CWD is inside a workspace."""
+        # Setup: project with pyproject.toml and workspaces
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='test'\n")
+        run_dir = tmp_path / "workspaces" / "my_ws" / "runs" / "run_xyz"
+        run_dir.mkdir(parents=True)
+        
+        # CWD is inside a workspace
+        workspace_subdir = tmp_path / "workspaces" / "my_ws" / "scripts"
+        workspace_subdir.mkdir(parents=True)
+        monkeypatch.chdir(workspace_subdir)
+        
+        result = find_run("run_xyz")
+        
+        assert result is not None
+        assert result.workspace_slug == "my_ws"
+        assert result.run_id == "run_xyz"
+
+    def test_find_run_explicit_base_path_overrides(self, tmp_path, monkeypatch):
+        """Explicit base_path parameter overrides all resolution."""
+        # Setup: env var points to one location
+        env_ws = tmp_path / "env_workspaces"
+        (env_ws / "ws1" / "runs" / "env_run").mkdir(parents=True)
+        
+        # Explicit path points to another
+        explicit_ws = tmp_path / "explicit_workspaces"
+        (explicit_ws / "ws2" / "runs" / "explicit_run").mkdir(parents=True)
+        
+        monkeypatch.setenv(_ENV_WORKSPACES_ROOT, str(env_ws))
+        monkeypatch.chdir(tmp_path)
+        
+        # Explicit base_path should win
+        result = find_run("explicit_run", base_path=explicit_ws)
+        
+        assert result is not None
+        assert result.workspace_slug == "ws2"
+        assert result.run_id == "explicit_run"
+        
+        # Verify env_run is not found with explicit path
+        result2 = find_run("env_run", base_path=explicit_ws)
+        assert result2 is None
+
+    def test_find_run_returns_none_when_cannot_resolve(self, tmp_path, monkeypatch):
+        """Returns None when workspaces root cannot be resolved."""
+        # Empty directory, no pyproject.toml, no workspaces
+        monkeypatch.chdir(tmp_path)
+        
+        result = find_run("any_run")
+        
+        assert result is None
+
+
+class TestLoadWorkspaceContextWithResolution:
+    """Tests for load_workspace_context() using automatic resolution."""
+
+    def test_load_with_env_var(self, tmp_path, monkeypatch):
+        """load_workspace_context() works with env var set."""
+        # Setup: workspace in custom location
+        custom_ws = tmp_path / "custom" / "workspaces"
+        ws_dir = custom_ws / "my_workspace"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "main.py").write_text(
+            '''
+def get_campaign():
+    return {"name": "env_workspace"}
+'''
+        )
+        
+        monkeypatch.setenv(_ENV_WORKSPACES_ROOT, str(custom_ws))
+        monkeypatch.chdir(tmp_path)
+        
+        result = load_workspace_context("my_workspace")
+        
+        assert result == {"name": "env_workspace"}
+
+    def test_load_from_subdirectory(self, tmp_path, monkeypatch):
+        """load_workspace_context() works from subdirectory."""
+        # Setup: project with pyproject.toml
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='test'\n")
+        ws_dir = tmp_path / "workspaces" / "test_ws"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "main.py").write_text(
+            '''
+def get_campaign():
+    return {"name": "test_workspace", "from": "subdirectory"}
+'''
+        )
+        
+        # CWD is a subdirectory
+        subdir = tmp_path / "src" / "module"
+        subdir.mkdir(parents=True)
+        monkeypatch.chdir(subdir)
+        
+        result = load_workspace_context("test_ws")
+        
+        assert result["name"] == "test_workspace"
+        assert result["from"] == "subdirectory"
+
+    def test_clear_error_when_cannot_resolve(self, tmp_path, monkeypatch):
+        """RuntimeError with helpful message when resolution fails."""
+        # Empty directory, no pyproject.toml, no workspaces
+        monkeypatch.chdir(tmp_path)
+        
+        with pytest.raises(RuntimeError) as exc_info:
+            load_workspace_context("any_workspace")
+        
+        error_msg = str(exc_info.value)
+        assert "Cannot find workspaces directory" in error_msg
+        assert "MATTERSTACK_WORKSPACES_ROOT" in error_msg
+        assert "pyproject.toml" in error_msg
+
+    def test_load_explicit_base_path_overrides(self, tmp_path, monkeypatch):
+        """Explicit base_path parameter overrides all resolution."""
+        # Setup: env var points to one location
+        env_ws = tmp_path / "env_workspaces"
+        env_ws_dir = env_ws / "ws1"
+        env_ws_dir.mkdir(parents=True)
+        (env_ws_dir / "main.py").write_text(
+            '''
+def get_campaign():
+    return {"source": "env"}
+'''
+        )
+        
+        # Explicit path points to another
+        explicit_ws = tmp_path / "explicit_workspaces"
+        explicit_ws_dir = explicit_ws / "ws2"
+        explicit_ws_dir.mkdir(parents=True)
+        (explicit_ws_dir / "main.py").write_text(
+            '''
+def get_campaign():
+    return {"source": "explicit"}
+'''
+        )
+        
+        monkeypatch.setenv(_ENV_WORKSPACES_ROOT, str(env_ws))
+        monkeypatch.chdir(tmp_path)
+        
+        # Explicit base_path should win
+        result = load_workspace_context("ws2", base_path=explicit_ws)
+        
+        assert result["source"] == "explicit"

@@ -5,9 +5,13 @@ Contains commands for managing individual tasks:
 - cmd_rerun: Rerun a task by resetting it to PENDING
 - cmd_attempts: List attempt history for a task
 - cmd_cancel_attempt: Cancel an attempt
+- cmd_cleanup_orphans: Find and clean up orphaned attempts
 """
+import re
 import sys
 import logging
+import traceback
+from datetime import datetime
 
 from matterstack.storage.state_store import SQLiteStateStore
 from matterstack.cli.utils import find_run
@@ -210,7 +214,113 @@ def cmd_cancel_attempt(args):
 
     except Exception as e:
         logger.error(f"Failed to cancel attempt: {e}")
-        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
+
+def _parse_timeout(timeout_str: str) -> int:
+    """
+    Parse timeout string like '1h', '30m', '3600s', '3600' to seconds.
+    
+    Args:
+        timeout_str: Timeout string with optional h/m/s suffix.
+    
+    Returns:
+        Timeout in seconds.
+    
+    Raises:
+        ValueError: If the format is invalid.
+    """
+    match = re.match(r'^(\d+)([hms]?)$', timeout_str.lower().strip())
+    if not match:
+        raise ValueError(f"Invalid timeout format: {timeout_str}")
+    
+    value = int(match.group(1))
+    unit = match.group(2) or 's'
+    
+    if unit == 'h':
+        return value * 3600
+    elif unit == 'm':
+        return value * 60
+    return value
+
+
+def _format_age(created_at: datetime) -> str:
+    """
+    Format age as human-readable string.
+    
+    Args:
+        created_at: The creation timestamp.
+    
+    Returns:
+        Human-readable age string like "1h 15m".
+    """
+    if not created_at:
+        return "unknown"
+    
+    delta = datetime.utcnow() - created_at
+    total_seconds = int(delta.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes = remainder // 60
+    
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def cmd_cleanup_orphans(args):
+    """
+    Find and optionally clean up orphaned attempts.
+    
+    Orphaned attempts are those stuck in CREATED state with no external_id
+    for longer than the timeout threshold.
+    """
+    run_id = args.run_id
+    confirm = args.confirm
+    timeout_str = args.timeout or "1h"
+    
+    try:
+        timeout_seconds = _parse_timeout(timeout_str)
+    except ValueError as e:
+        logger.error(str(e))
+        print(f"Error: {e}")
+        print("Valid formats: 1h, 30m, 3600s, 3600")
+        sys.exit(1)
+    
+    handle = find_run(run_id)
+    if not handle:
+        logger.error(f"Run {run_id} not found.")
+        sys.exit(1)
+    
+    try:
+        store = SQLiteStateStore(handle.db_path)
+        orphans = store.find_orphaned_attempts(run_id, timeout_seconds)
+        
+        if not orphans:
+            print(f"No orphaned attempts found in run {run_id}.")
+            return
+        
+        print(f"Found {len(orphans)} orphaned attempt(s):")
+        for a in orphans:
+            age = _format_age(a.created_at)
+            print(f"  - {a.attempt_id} (task: {a.task_id})")
+            print(f"      Created: {a.created_at} UTC")
+            print(f"      Age: {age}")
+            print(f"      Reason: No external_id, CREATED > {timeout_str}")
+        
+        if not confirm:
+            print(f"\nRun with --confirm to mark these as FAILED_INIT.")
+            return
+        
+        # Actually clean up
+        attempt_ids = [a.attempt_id for a in orphans]
+        count = store.mark_attempts_failed_init(
+            attempt_ids,
+            reason=f"Orphan cleanup: stuck in CREATED for > {timeout_str}",
+        )
+        print(f"\nMarked {count} attempt(s) as FAILED_INIT.")
+        
+    except Exception as e:
+        logger.error(f"Failed to clean up orphans: {e}")
         traceback.print_exc()
         sys.exit(1)

@@ -1,10 +1,11 @@
 from __future__ import annotations
 from typing import Dict, List, Set, Union, Optional
 from pathlib import Path
-import uuid
 import logging
 
 from pydantic import BaseModel, Field
+
+from matterstack.core.id_generator import generate_task_id
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class Task(BaseModel):
     files: Dict[str, Union[str, Path, FileFromPath, FileFromContent]] = Field(default_factory=dict)
     env: Dict[str, str] = Field(default_factory=dict)
     dependencies: Set[str] = Field(default_factory=set)
-    task_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    task_id: str = Field(default_factory=generate_task_id)
     
     # Resource requirements
     cores: Optional[int] = None
@@ -56,6 +57,11 @@ class Task(BaseModel):
     # Selective Download Configuration
     # e.g. {"include": ["*.json"], "exclude": ["*.log"]}
     download_patterns: Optional[Dict[str, List[str]]] = None
+
+    # Operator routing (v0.2.6+)
+    # Canonical operator key for task dispatch (e.g., "hpc.atesting", "local.default")
+    # Priority: operator_key > env["MATTERSTACK_OPERATOR"] > task type detection > config fallback
+    operator_key: Optional[str] = None
 
 class Workflow(BaseModel):
     """

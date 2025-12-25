@@ -107,6 +107,9 @@ class TaskModel(Base):
     # Polymorphism
     task_type: Mapped[str] = mapped_column(String, default="Task")
 
+    # v4: explicit operator routing key (e.g. "hpc.atesting", "local.default")
+    operator_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     # v2: convenience pointer to the current attempt (soft reference; may not have FK constraint
     # in migrated DBs because SQLite ALTER TABLE cannot add FKs)
     current_attempt_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)

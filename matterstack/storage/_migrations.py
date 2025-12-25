@@ -147,3 +147,23 @@ class _MigrationsMixin:
 
         info.value = CURRENT_SCHEMA_VERSION
         session.commit()
+
+    def _migrate_schema_v3_to_v4(self, session: Session, info: SchemaInfo) -> None:
+        """
+        Additive, non-destructive migration from schema v3 -> v4.
+
+        v4 adds `tasks.operator_key` (nullable) for first-class operator routing,
+        enabling declarative operator specification on Task models.
+        """
+        from matterstack.storage.state_store import CURRENT_SCHEMA_VERSION
+
+        logger.info(f"Migrating database schema v3 -> v4 at {self.db_path}")
+
+        # Ensure latest tables exist (additive; does not add columns on existing tables).
+        Base.metadata.create_all(self.engine)
+
+        if not self._sqlite_table_has_column(session, "tasks", "operator_key"):
+            session.execute(text("ALTER TABLE tasks ADD COLUMN operator_key VARCHAR"))
+
+        info.value = CURRENT_SCHEMA_VERSION
+        session.commit()

@@ -1,0 +1,17 @@
+operators:
+  hpc.atesting:
+    kind: hpc
+    backend:
+      type: slurm
+      workspace_root: /scratch/alpine/sefl7948/Agent_Runs
+      ssh:
+        host: login.rc.colorado.edu
+        user: sefl7948
+        key_path: ~/.ssh/cu_alpine
+      slurm:
+        account: ucb591_asc1
+        partition: atesting
+        qos: testing
+        time: "00:01:00"
+        ntasks: 1
+        modules: []

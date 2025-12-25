@@ -16,6 +16,7 @@ from matterstack.cli.commands.task_management import (
     cmd_rerun,
     cmd_attempts,
     cmd_cancel_attempt,
+    cmd_cleanup_orphans,
 )
 from matterstack.cli.commands.inspection import (
     cmd_status,
@@ -38,6 +39,7 @@ __all__ = [
     "cmd_rerun",
     "cmd_attempts",
     "cmd_cancel_attempt",
+    "cmd_cleanup_orphans",
     # Inspection
     "cmd_status",
     "cmd_explain",

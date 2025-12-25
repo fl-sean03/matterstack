@@ -38,6 +38,10 @@ def test_concurrency_limit_applied(mock_store_cls, mock_config, tmp_path):
     active_attempt.status = ExternalRunStatus.RUNNING.value
     mock_store.get_active_attempts.return_value = [active_attempt]
     mock_store.get_attempt_task_ids.return_value = {"task1"}
+    
+    # Per-operator concurrency tracking (v0.2.6+)
+    # ExternalTask without operator_key resolves to "" (empty string)
+    mock_store.count_active_attempts_by_operator.return_value = {"": 1}
 
     # Legacy external runs: none for this test
     mock_store.get_active_external_runs.return_value = []

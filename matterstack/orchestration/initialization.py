@@ -5,13 +5,12 @@ This module contains functions for initializing new runs and resuming existing o
 """
 from __future__ import annotations
 import logging
-import uuid
 from pathlib import Path
 from typing import Optional
-from datetime import datetime, timezone
 
 from matterstack.core.run import RunHandle, RunMetadata
 from matterstack.core.campaign import Campaign
+from matterstack.core.id_generator import generate_run_id
 from matterstack.storage.state_store import SQLiteStateStore
 
 logger = logging.getLogger(__name__)
@@ -46,7 +45,7 @@ def initialize_run(
         RunHandle for the new run.
     """
     if run_id is None:
-        run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + "_" + str(uuid.uuid4())[:8]
+        run_id = generate_run_id()
 
     # workspace/runs/run_id/
     root_path = base_path / workspace_slug / "runs" / run_id
