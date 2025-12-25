@@ -45,9 +45,12 @@ Thumbs.db
 # Assets (large data files)
 assets/
 
-# Generated documentation
-docs/contextSummaries/
-docs/DevGuides/
+# Plans and documentation (development artifacts)
+plans/
+docs/
+
+# Build artifacts
+artifacts/
 
 # Temporary results
 tmp_results/
